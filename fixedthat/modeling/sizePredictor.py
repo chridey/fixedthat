@@ -40,7 +40,7 @@ class SizePredictor(nn.Module):
             self.query = self.query.cuda()
         
         self.inp = nn.Linear(self.input_size, self.hidden_size)
-        self.out = nn.Linear(self.hidden_size, 1)
+        self.out = nn.Linear(self.hidden_size, 1, bias=False)
         
     def forward(self, encoder_outputs):
         batch_size = self._validate_args(encoder_outputs)
@@ -57,11 +57,17 @@ class SizePredictor(nn.Module):
         else:
             output = torch.mean(encoder_outputs, dim=1)
 
+        #print(output.shape)
         #prediction = torch.exp(self.out(self.inp(output)).view(-1))
-        prediction = self.out(self.inp(output)).view(-1)
-        #print(prediction.shape)
+        input_hid = F.relu(self.inp(output))
+        #print(input_hid.shape)
+        prediction = self.out(input_hid).view(-1)
+        #print(prediction)
+        #print(torch.exp(prediction))
+        #print(torch.exp(prediction).long())
         #print(attn.shape)
-        return [prediction], None, {'attention_score': attn, 'sequence': [torch.exp(prediction).long()]}
+        #print('bias', self.out.bias)
+        return [prediction], None, {'attention_score': attn, 'sequence': [prediction.long()]} #[torch.exp(prediction).long()]}
 
     def _validate_args(self, encoder_outputs):
                     

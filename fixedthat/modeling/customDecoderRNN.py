@@ -105,6 +105,7 @@ class CustomDecoderRNN(DecoderRNN):
         
         #remove some characters like . that are "free" ie if not in input we can generate them
         self.specials = {self.source_vocab.stoi[i] for i in (ut.stopwords | set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | set(j for j in self.target_vocab.stoi if all(map(lambda x: not x.isalnum(), j))))} | {0}
+        #self.target_specials = 
         
     def forward_step(self, input_var, hidden, encoder_outputs, function):
         #print(input_var)
@@ -135,100 +136,146 @@ class CustomDecoderRNN(DecoderRNN):
         
         return predicted_softmax, hidden, attn
 
-    def forward(self, encoder_inputs, decoder_inputs=None, encoder_hidden=None, encoder_outputs=None,
-                    function=F.log_softmax, teacher_forcing_ratio=0, counts=None):
-        ret_dict = dict()
-        if self.use_attention:
-            ret_dict[DecoderRNN.KEY_ATTN_SCORE] = list()
-
-        decoder_inputs, batch_size, max_length = self._validate_args(encoder_inputs, decoder_inputs, encoder_hidden,
-                                                             encoder_outputs, function, teacher_forcing_ratio,
-                                                             counts)
-        decoder_hidden = self._init_state(encoder_hidden)
-
-        use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
-        #print(use_teacher_forcing)
-        #print(decoder_inputs.shape, encoder_inputs.shape)
+    def decode(self, step, decoder_outputs, lengths=None, sequence_symbols=None,
+               counters=None, encoder_input_lookup=None, encoder_input_data=None, 
+               use_teacher_forcing=True, k=1):
         
         if not use_teacher_forcing:
-            #need to determine if a symbol we generate is in the input
-            counters = decoder_inputs[:,0,1].contiguous().view(-1, 1)
-            encoder_inputs_data = encoder_inputs.data.cpu().numpy()
-            encoder_input_lookup = [set(x) for x in encoder_inputs_data]
-        
-        decoder_outputs = []
-        sequence_symbols = []
-        lengths = np.array([max_length] * batch_size)
-        
-        def decode(step, step_output, step_attn, counters, use_teacher_forcing=True):
-            decoder_outputs.append(step_output)
-            if self.use_attention:
-                ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
+            symbols = []
+            batch_size = decoder_outputs.size(0) // k
+            vocab_size = decoder_outputs.size(1)
+            decoder_outputs = decoder_outputs.view(batch_size, -1)
+            top_scores, top_symbols = decoder_outputs.topk(2*k, dim=1)
+            #scores = scores.data.cpu().numpy()
+            top_symbols = top_symbols.data.cpu().numpy()
+            current_counters = counters.data.cpu().view(-1, k).numpy()
 
-            if not use_teacher_forcing:
-                symbols = []        
-                top_symbols = decoder_outputs[-1].topk(2)[1].data.cpu().view(-1,2).numpy()
-                current_counters = counters.data.cpu().view(-1).numpy()
-
-                '''
-                print('sym shape', top_symbols.shape)
-                print('ctr shape', current_counters.shape)
-
-                idx = 0
-                print('ctrs', current_counters[idx])                    
-                print('symbols', top_symbols[idx])
-                print('tokens', [self.target_vocab.itos[q] for q in top_symbols[idx]])
-                legal = [self.eos_id] + [self.target_vocab.stoi[self.source_vocab.itos[i]] for i in encoder_inputs_data[idx]]
-                print('legal', legal)
-                legal = Variable(torch.LongTensor(legal)).cuda()
-                print('legal scores', decoder_outputs[-1][idx][legal])
-                print('top legal', decoder_outputs[-1][idx][legal].topk(1))
-                symbol = int(legal[decoder_outputs[-1][idx][legal].topk(1)[1]].data.cpu()[0])
-                print('symbol', symbol)
-                '''
-                
-                for idx,(symbol1, symbol2) in enumerate(top_symbols):
-                    #TODO: modify vocabulary distribution to zero out illegal choices?
-                    #if the counter is > 0, legal symbols are vocab - {EOS}, need to ignore EOS so take top 2
-                    if current_counters[idx] > 0:
-                        symbol = symbol1
-                        if symbol1 == self.eos_id:
-                            symbol = symbol2
-
-                        source_symbol = self.source_vocab.stoi[self.target_vocab.itos[symbol]]
-                        if source_symbol not in encoder_input_lookup[idx] and source_symbol not in self.specials:
-                            current_counters[idx] -= 1
-                    #if the counter is at 0, legal symbols are the input tokens and EOS (find highest scoring)
-                    #allow UNK?
-                    else:
-                        legal = [self.eos_id] + [self.target_vocab.stoi[self.source_vocab.itos[i]] for i in encoder_inputs_data[idx]]
-                        legal = Variable(torch.LongTensor(legal))
-                        if torch.cuda.is_available():
-                            legal = legal.cuda()
-                        symbol = int(legal[decoder_outputs[-1][idx][legal].topk(1)[1]].data.cpu()[0])
-                    #print(symbol)
-                    symbols.append(symbol)
-                        
-                #need to update counter
-                current_counters = Variable(torch.LongTensor(current_counters)).view(-1, 1)
-                symbols = Variable(torch.LongTensor(symbols)).view(-1, 1)
-                if torch.cuda.is_available():
-                    current_counters = current_counters.cuda()
-                    symbols = symbols.cuda()
-            else:
-                symbols = decoder_outputs[-1].topk(1)[1]
-                
-            sequence_symbols.append(symbols)
+            print(batch_size)
+            print(vocab_size)
+            print(k)
+            print([q for q in top_scores[0].data.cpu().numpy()])
+            print([q % vocab_size for q in top_symbols[0]])
+            print('tokens', [self.target_vocab.itos[q % vocab_size] for q in top_symbols[0]])
+            print(current_counters[0])
+            target_specials = {self.target_vocab.stoi[self.source_vocab.itos[i]] for i in self.specials} - {0}
+            #top_symbols = decoder_outputs[-1].topk(2)[1].data.cpu().view(-1,2).numpy()
+            #current_counters = counters.data.cpu().view(-1).numpy()
             
+            '''
+            print('sym shape', top_symbols.shape)
+            print('ctr shape', current_counters.shape)
+
+            idx = 0
+            print('ctrs', current_counters[idx])                    
+            print('symbols', top_symbols[idx])
+            print('tokens', [self.target_vocab.itos[q] for q in top_symbols[idx]])
+            legal = [self.eos_id] + [self.target_vocab.stoi[self.source_vocab.itos[i]] for i in encoder_inputs_data[idx]]
+            print('legal', legal)
+            legal = Variable(torch.LongTensor(legal)).cuda()
+            print('legal scores', decoder_outputs[-1][idx][legal])
+            print('top legal', decoder_outputs[-1][idx][legal].topk(1))
+            symbol = int(legal[decoder_outputs[-1][idx][legal].topk(1)[1]].data.cpu()[0])
+            print('symbol', symbol)
+            '''
+
+            ref = []
+            new_scores = []
+            for idx, candidates in enumerate(top_symbols):
+                #TODO: modify vocabulary distribution to zero out illegal choices?
+                #if the counter is > 0, legal symbols are vocab - {EOS}, need to ignore EOS so take top 2
+                good = []
+                good_scores = []
+                legal = {self.eos_id} | {self.target_vocab.stoi[self.source_vocab.itos[i]] for i in encoder_input_data[idx]} | target_specials #self.target_specials
+                scores = top_scores[idx]
+                multiplier = 2
+                while True:
+                    for sidx, candidate in enumerate(candidates):
+                        symbol = candidate % vocab_size
+                        predecessor = candidate / vocab_size
+                        count = current_counters[idx][predecessor]
+                        #print(sidx, candidate, symbol, predecessor, count, scores[sidx])
+                        if count > 0:
+                            if symbol == self.eos_id:
+                                continue                            
+                        
+                            source_symbol = self.source_vocab.stoi[self.target_vocab.itos[symbol]]
+                            if source_symbol not in encoder_input_lookup[idx] and source_symbol not in self.specials:
+                                count -= 1
+                        #if the counter is at 0, legal symbols are the input and EOS and the specials (find highest scoring)
+                            
+                        #allow UNK?
+                        elif symbol not in legal:
+                            continue
+                        good.append([symbol, predecessor, count])
+                        good_scores.append(scores[sidx].data[0])
+                    
+                    if len(good) >= k:
+                        good = good[:k]
+                        good_scores = good_scores[:k]
+                        break
+                    #otherwise we have to go to the GPU and get the next top whatever, which could get expensive
+                    #TODO - make this faster
+                    multiplier *= 2
+                    scores, candidates = decoder_outputs[idx].topk(multiplier*k)
+                    scores = scores[(multiplier/2)*k:]
+                    candidates = candidates[(multiplier/2)*k:].data.cpu().numpy()
+                    print(scores)
+                    print(candidates)
+                    print('extra tokens', multiplier, [self.target_vocab.itos[q % vocab_size] for q in candidates])
+                                        
+                ref.append(good)
+                new_scores.extend(good_scores)
+
+            print(ref)
+            print(good_scores)
+            ref = Variable(torch.LongTensor(ref))
+            if torch.cuda.is_available():
+                ref = ref.cuda()
+
+            print(ref.shape)
+            symbols = ref[:,:,0].contiguous().view(-1, 1)
+            predecessors = ref[:,:,1].contiguous().view(-1,1)
+            current_counters = ref[:,:,2].contiguous().view(-1,1)
+            
+            scores = Variable(torch.FloatTensor(new_scores)).view(-1,1)
+            if torch.cuda.is_available():
+                scores = scores.cuda()
+        else:
+            symbols = decoder_outputs.topk(1)[1]
+
+        if sequence_symbols is not None:
+            sequence_symbols.append(symbols)
+
+        if lengths is not None:
             eos_batches = symbols.data.eq(self.eos_id)
             if eos_batches.dim() > 0:
                 eos_batches = eos_batches.cpu().view(-1).numpy()
                 update_idx = ((lengths > step) & eos_batches) != 0
                 lengths[update_idx] = len(sequence_symbols)
 
-            if not use_teacher_forcing:
-                return symbols, current_counters
-            return symbols
+        if not use_teacher_forcing:
+            return sequence_symbols, lengths, (current_counters, scores, predecessors)
+        return sequence_symbols, lengths, (None,None,None)
+    
+    def forward(self, encoder_inputs, decoder_inputs=None, encoder_hidden=None, encoder_outputs=None,
+                    function=F.log_softmax, teacher_forcing_ratio=0, counts=None):
+        ret_dict = dict()
+        if self.use_attention:
+            ret_dict[DecoderRNN.KEY_ATTN_SCORE] = list()
+
+        decoder_inputs, batch_size, max_length, extras = self._validate_args(encoder_inputs, decoder_inputs,
+                                                                             encoder_hidden, encoder_outputs,
+                                                                             function, teacher_forcing_ratio,
+                                                                             counts)
+        decoder_hidden = self._init_state(encoder_hidden)
+
+        use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+        #print(use_teacher_forcing)
+        #print(decoder_inputs.shape, encoder_inputs.shape)
+                
+        decoder_outputs = []
+        lengths = np.array([max_length] * batch_size)        
+        sequence_symbols = []
 
         # Manual unrolling is used to support random teacher forcing.
         # If teacher_forcing_ratio is True or False instead of a probability, the unrolling can be done in graph
@@ -244,17 +291,31 @@ class CustomDecoderRNN(DecoderRNN):
                     step_attn = attn[:, di, :]
                 else:
                     step_attn = None
-                decode(di, step_output, step_attn, None, use_teacher_forcing)
+                    
+                decoder_outputs.append(step_output)
+                if self.use_attention:
+                    ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
+                    
+                sequence_symbols, lengths, _ = self.decode(di, decoder_outputs[-1], lengths, sequence_symbols,
+                                                           use_teacher_forcing=use_teacher_forcing, **extras)
         else:
             decoder_input = decoder_inputs[:, 0].unsqueeze(1)
+            counters = extras.pop('counters')
             for di in range(max_length):
                 decoder_output, decoder_hidden, step_attn = self.forward_step(decoder_input, decoder_hidden,
                                                                               encoder_outputs,
                                                                               function=function)
                 step_output = decoder_output.squeeze(1)
-                symbols, counters = decode(di, step_output, step_attn, counters, use_teacher_forcing)
+                
+                decoder_outputs.append(step_output)
+                if self.use_attention:
+                    ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
+                
+                sequence_symbols, lengths, (counters,_,_) =self.decode(di, decoder_outputs[-1], lengths, sequence_symbols,
+                                                                  counters, use_teacher_forcing=use_teacher_forcing,
+                                                                  **extras)
                 #print(counters.max(), counters.min())
-                decoder_input = torch.cat([symbols.unsqueeze(2), counters.unsqueeze(2)], dim=2)
+                decoder_input = torch.cat([sequence_symbols[-1].unsqueeze(2), counters.unsqueeze(2)], dim=2)
 
         ret_dict[DecoderRNN.KEY_SEQUENCE] = sequence_symbols
         ret_dict[DecoderRNN.KEY_LENGTH] = lengths.tolist()
@@ -282,11 +343,11 @@ class CustomDecoderRNN(DecoderRNN):
     def _validate_args(self, encoder_inputs, decoder_inputs, encoder_hidden,
                        encoder_outputs, function, teacher_forcing_ratio,
                        counts=None):
-                    
+
         if self.use_attention:
             if encoder_outputs is None:
                 raise ValueError("Argument encoder_outputs cannot be None when attention is used.")
-
+            
         # inference batch size
         if decoder_inputs is None and encoder_hidden is None:
             batch_size = 1
@@ -299,6 +360,12 @@ class CustomDecoderRNN(DecoderRNN):
                 elif self.rnn_cell is nn.GRU:
                     batch_size = encoder_hidden.size(1)
 
+        encoder_input_data = encoder_inputs.data.cpu().numpy()
+        encoder_input_lookup = [set(x) for x in encoder_input_data]
+
+        extras = dict(encoder_input_data=encoder_input_data,
+                      encoder_input_lookup=encoder_input_lookup)
+                                    
         # set default input and max decoding length
         if decoder_inputs is None:
             if teacher_forcing_ratio > 0:
@@ -319,7 +386,6 @@ class CustomDecoderRNN(DecoderRNN):
                 
             max_length = decoder_inputs.size(1) - 1 # minus the start of sequence symbol
 
-            encoder_input_data = encoder_inputs.data.cpu().numpy()
             decoder_input_data = decoder_inputs.data.cpu().numpy()
             
             input_counts = []
@@ -382,6 +448,8 @@ class CustomDecoderRNN(DecoderRNN):
                 pad = [max_oov+len(self.target_vocab.stoi), 0, 0]
                 input_attention_map[i].extend(pad * (len(input_attention_map[i]))
             '''
+        #need to determine if a symbol we generate is in the input
+        extras.update(counters=decoder_inputs[:,0,1].contiguous().view(-1, 1))
             
-        return decoder_inputs, batch_size, max_length
+        return decoder_inputs, batch_size, max_length, extras
                 

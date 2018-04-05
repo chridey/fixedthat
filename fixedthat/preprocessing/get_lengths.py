@@ -1,5 +1,9 @@
 import sys
 
+from fixedthat.preprocessing import ftfy_utils as ut
+
+specials = ut.stopwords | set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./')
+
 infile = sys.argv[1]
 
 with open(infile) as f:
@@ -10,7 +14,7 @@ with open(infile) as f:
 
         count = 0
         for word in ftfys:
-            if word not in parents:
+            if word not in parents: # and word not in specials and word.isalnum():
                 count += 1
 
         '''

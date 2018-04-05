@@ -19,11 +19,12 @@ from fixedthat.modeling.fields import CustomTargetField as TargetField
 from fixedthat.modeling.customDecoderRNN import CustomDecoderRNN
 from fixedthat.modeling.customSeq2seq import CustomSeq2seq
 from fixedthat.modeling.customPredictor import CustomPredictor
-from fixedthat.modeling.loss import PoissonLoss
+from fixedthat.modeling.loss import PoissonLoss, MSELoss
 from fixedthat.modeling.sizePredictor import SizePredictor
+from fixedthat.modeling.beamSearchDecoder import BeamSearchDecoder
 
-#from ftfy.modeling.loss import CustomSupervisedTrainer as SupervisedTrainer
-
+from fixedthat.modeling.customEvaluator import Evaluator
+from fixedthat.modeling.customTrainer import CustomTrainer as SupervisedTrainer
 
 try:
     raw_input          # Python 2
@@ -119,7 +120,8 @@ else:
 
     loss = Perplexity(weight, pad)
     if opt.size:
-        loss = PoissonLoss()#log_input=True)
+        #loss = PoissonLoss()#log_input=True)
+        loss = MSELoss()
     
     if torch.cuda.is_available():
         loss.cuda()
@@ -168,9 +170,11 @@ else:
         # optimizer.set_scheduler(scheduler)
 
     # train
+    evaluator = Evaluator(loss=loss, batch_size=100, prediction_dir=opt.expt_dir)
     t = SupervisedTrainer(loss=loss, batch_size=100, #32,
                           checkpoint_every=1000,
-                          print_every=10, expt_dir=opt.expt_dir)
+                          print_every=10, expt_dir=opt.expt_dir,
+                          evaluator=evaluator)
 
     seq2seq = t.train(seq2seq, train,
                       num_epochs=opt.num_epochs, dev_data=dev,
@@ -178,7 +182,8 @@ else:
                       teacher_forcing_ratio=0.5,
                       resume=opt.resume)
 
-if opt.counter:    
+if opt.counter:
+    seq2seq.decoder = BeamSearchDecoder(seq2seq.decoder, 10)
     predictor = CustomPredictor(seq2seq, input_vocab, output_vocab)
 else:
     predictor = Predictor(seq2seq, input_vocab, output_vocab)

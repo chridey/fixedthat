@@ -14,7 +14,7 @@ class CustomSeq2seq(Seq2seq):
                 teacher_forcing_ratio=0, counts=None):
         encoder_outputs, encoder_hidden = self.encoder(input_variable, input_lengths)
 
-        if False: #self.predict_size:
+        if self.predict_size:
             result = self.decoder(encoder_outputs)
         else:
             result = self.decoder(input_variable,
