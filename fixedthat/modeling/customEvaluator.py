@@ -18,14 +18,19 @@ class Evaluator(object):
         prediction_dir - whether to save individual predictions
     """
 
-    def __init__(self, loss=NLLLoss(), batch_size=64, prediction_dir=None):
+    def __init__(self, loss=NLLLoss(), batch_size=64, prediction_dir=None, pad=None,
+                 filter_illegal=True, use_prefix=False):
         self.loss = loss
         self.batch_size = batch_size
 
         self.prediction_dir = prediction_dir
-        if not os.path.exists(prediction_dir):
+        if prediction_dir is not None and not os.path.exists(prediction_dir):
             os.mkdir(prediction_dir)
         self.epoch = 0
+
+        self.pad = pad
+        self.filter_illegal = filter_illegal
+        self.use_prefix = use_prefix
 
     def save_predictions(self, predictions):
         #print(len(predictions), [i.shape for i in predictions])
@@ -55,20 +60,30 @@ class Evaluator(object):
             dataset=data, batch_size=self.batch_size,
             sort=True, sort_key=lambda x: len(x.src),
             device=device, train=False)
-        tgt_vocab = data.fields[seq2seq.tgt_field_name].vocab
-        pad = tgt_vocab.stoi[data.fields[seq2seq.tgt_field_name].pad_token]
 
+        if self.pad is None:
+            tgt_vocab = data.fields[seq2seq.tgt_field_name].vocab
+            pad = tgt_vocab.stoi[data.fields[seq2seq.tgt_field_name].pad_token]
+        else:
+            pad = self.pad
+            
         predictions = []
         for batch in batch_iterator:
             input_variables, input_lengths  = getattr(batch, seq2seq.src_field_name)
             target_variables = getattr(batch, seq2seq.tgt_field_name)
-
-            decoder_outputs, decoder_hidden, other = model(input_variables, input_lengths.tolist(), target_variables)
+            copy_mask = getattr(batch, 'extra', None)
+            
+            decoder_outputs, decoder_hidden, other = model(input_variables, input_lengths.tolist(),
+                                                           target_variables, mask=copy_mask,
+                                                           filter_illegal=self.filter_illegal,
+                                                           use_prefix=self.use_prefix)
 
             # Evaluation
             seqlist = other['sequence']
             batch_predictions = []
             for step, step_output in enumerate(decoder_outputs):
+                if self.use_prefix and step == 0:
+                    continue
                 target = target_variables[:, step + 1]
                 loss.eval_batch(step_output.view(target_variables.size(0), -1), target)
 

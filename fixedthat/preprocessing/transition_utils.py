@@ -1,3 +1,54 @@
+def path2copy(path, parent, parent_range, ftfy):
+    #print(parent, parent_range, ftfy)
+    copy = [0] * len(parent)
+    
+    parent = ['BOS'] + parent[parent_range[0]:parent_range[1]]
+    ftfy = ['BOS'] + ftfy
+
+    if path is None or path[-1] is None:
+        return copy
+    
+    path[-1][0] = len(parent)-1
+    path[-1][1] = len(ftfy)-1
+    
+    for idx,node in enumerate(path[1:]):
+        #print(idx, node, parent[node[0]].lower(), ftfy[node[1]].lower())
+        if node[0] < len(parent) and node[1] < len(ftfy):
+            if parent[node[0]].lower() == ftfy[node[1]].lower():
+                copy[parent_range[0]+node[0]-1] = 1
+            elif copy[parent_range[0]+node[0]-1] != 1:
+                copy[parent_range[0]+node[0]-1] = 0
+
+    #print(copy)
+    return copy
+    
+def path2segments(path, parent, parent_range, ftfy, verbose=False):
+    parent = ['BOS'] + parent[parent_range[0]:parent_range[1]]
+    ftfy = ['BOS'] + ftfy
+    
+    on_path = []
+    off_path = []
+
+    if path is None or path[-1] is None:
+        return [[]], [[]]
+    
+    path[-1][0] = len(parent)-1
+    path[-1][1] = len(ftfy)-1
+
+    previous = None
+    #TODO
+    
+    for idx,node in enumerate(path[1:]):
+        if parent[node[0]].lower() == ftfy[node[1]].lower():
+            on_path[-1].append(ftfy[node[1]].lower())
+        else:
+            off_path[-1].append(ftfy[node[1]].lower())
+
+    if path[1][1] not in (1,-1):
+        off_path.insert(0, ftfy[1:path[1][1]])
+        
+    return transitions
+
 def path2transitions(path, parent, parent_range, ftfy, verbose=False):
     leftovers = parent[parent_range[1]:]
     parent = ['BOS'] + parent[parent_range[0]:parent_range[1]]
@@ -106,6 +157,37 @@ def transitions2ftfy(transitions, parent, verbose=False, ignore_invalid=False):
     if not ignore_invalid:
         assert(idx == len(parent))
                  
+    return output
+
+def transitions2transducer(transitions, parent, verbose=False, ignore_invalid=False):
+    output = []
+    stack = []
+    buffer = []
+    
+    idx = 0
+    for op in transitions:
+        if verbose:
+            print(op, idx, stack, buffer, output)
+        if op == 'SHIFT':
+            if idx < len(parent):
+                stack.append(parent[idx].lower())
+                idx += 1
+        elif op == 'REDUCE' or op == 'COPY-REDUCE':
+            output += buffer 
+            if op == 'COPY-REDUCE':
+                output += stack
+            output += ['<e>'] * len(stack)
+            stack = []
+            buffer = []
+        else:
+            buffer.append(op.lower())
+    
+    if len(buffer):
+        output += buffer
+
+    if len(stack):
+        output += ['<e>'] * len(stack)
+            
     return output
 
 

@@ -29,10 +29,17 @@ class Attention(nn.Module):
          >>> output = Variable(torch.randn(5, 5, 256))
          >>> output, attn = attention(output, context)
     """
-    def __init__(self, dim):
+    def __init__(self, dim, copy_predictor=False):
         super(Attention, self).__init__()
-        self.linear_out = nn.Linear(dim*2, dim)
+        self.multiplier = 2
+        if copy_predictor:
+            self.multiplier = 3
+            
+        self.linear_out = nn.Linear(dim*self.multiplier, dim)
+                        
         self.mask = None
+
+        self.copy_predictor = copy_predictor
 
     def set_mask(self, mask):
         """
@@ -42,22 +49,53 @@ class Attention(nn.Module):
         """
         self.mask = mask
 
-    def forward(self, output, context):
+    def forward(self, output, context, mask=None, copy_mask=None):        
         batch_size = output.size(0)
         hidden_size = output.size(2)
         input_size = context.size(1)
-        # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)
+
+        '''
+        if self.copy_predictor:
+            assert(mask is not None)
+            mask_e = mask.unsqueeze(2).expand_as(context)
+            copy_context = mask_e.float() * context * mask_e.ne(2).float()
+            context = (1-mask_e).float() * context * mask_e.ne(2).float()
+        '''
+        
+        # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)        
         attn = torch.bmm(output, context.transpose(1, 2))
         if self.mask is not None:
-            attn.data.masked_fill_(self.mask, -float('inf'))
+            #attn.data.masked_fill_(mask, -float('inf'))
+            attn.data.masked_fill_(mask.data.ne(2), -float('inf'))
         attn = F.softmax(attn.view(-1, input_size)).view(batch_size, -1, input_size)
 
         # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
-        mix = torch.bmm(attn, context)
 
-        # concat -> (batch, out_len, 2*dim)
-        combined = torch.cat((mix, output), dim=2)
-        # output -> (batch, out_len, dim)
-        output = F.tanh(self.linear_out(combined.view(-1, 2 * hidden_size))).view(batch_size, -1, hidden_size)
+        if self.copy_predictor:
+            # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)
+            #TODO: separate attention
+            #copy_attn = torch.bmm(output, copy_context.transpose(1, 2))
+            #if self.mask is not None:
+            #    copy_attn.data.masked_fill_(self.mask, -float('inf'))
+            #copy_attn = F.softmax(copy_attn.view(-1, input_size)).view(batch_size, -1, input_size)
+
+            # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
+            mask_e = copy_mask.view(batch_size, -1, input_size).expand_as(attn)
+            sub_attn = (1-mask_e).float() * attn * mask.view(batch_size, -1, input_size).expand_as(attn).ne(2).float()
+            copy_attn = mask_e.float() * attn * mask.view(batch_size, -1, input_size).expand_as(attn).ne(2).float()
+            
+            sub_mix = torch.bmm(sub_attn, context)            
+            copy_mix = torch.bmm(copy_attn, context)            
+            
+            combined = torch.cat((sub_mix, copy_mix, output), dim=2)
+            attn = torch.cat((copy_mask.view(batch_size, 1, input_size).expand_as(attn).unsqueeze(3).float(),
+                              attn.unsqueeze(3), copy_attn.unsqueeze(3)), dim=3)
+        else:
+            mix = torch.bmm(attn, context)
+            # concat -> (batch, out_len, 2*dim)
+            combined = torch.cat((mix, output), dim=2)
+            # output -> (batch, out_len, dim)
+            
+        output = F.tanh(self.linear_out(combined.view(-1, self.multiplier * hidden_size))).view(batch_size, -1, hidden_size)
 
         return output, attn

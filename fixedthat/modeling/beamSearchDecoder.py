@@ -3,10 +3,13 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 from seq2seq.models.TopKDecoder import TopKDecoder, _inflate
+from fixedthat.modeling.state import HiddenState
 
 class BeamSearchDecoder(TopKDecoder):
+    
     def forward(self, encoder_inputs, decoder_inputs=None, encoder_hidden=None, encoder_outputs=None,
-                function=F.log_softmax, teacher_forcing_ratio=0, retain_output_probs=True, counts=None):
+                function=F.log_softmax, teacher_forcing_ratio=0, retain_output_probs=True, counts=None,
+                mask=None, copy_mask=None, filter_illegal=True, use_prefix=False):
         """
         Forward rnn for MAX_LENGTH steps.  Look at :func:`seq2seq.models.DecoderRNN.DecoderRNN.forward_rnn` for details.
         """
@@ -17,6 +20,7 @@ class BeamSearchDecoder(TopKDecoder):
                                                                              counts)
 
         self.pos_index = Variable(torch.LongTensor(range(batch_size)) * self.k).view(-1, 1)
+        self.pos_index = self.pos_index.expand(batch_size, self.k).contiguous().view(batch_size*self.k,1)
         if torch.cuda.is_available():
             self.pos_index = self.pos_index.cuda()
             
@@ -24,22 +28,49 @@ class BeamSearchDecoder(TopKDecoder):
         encoder_hidden = self.rnn._init_state(encoder_hidden)
         if encoder_hidden is None:
             hidden = None
+        elif isinstance(encoder_hidden, HiddenState):
+            hidden = []
+            for field in encoder_hidden.fields:
+                if field is None:
+                    hidden.append(None)
+                elif isinstance(field, tuple):
+                    #print('b4', [h.shape for h in field])
+                    #hidden.append(tuple([_inflate(h, self.k, 1) for h in field]))
+                    hidden.append(tuple([_inflate(h.unsqueeze(2), self.k, 2).view(1,batch_size*self.k,-1) for h in field]))
+                    #print('aftr', [h.shape for h in hidden[-1]])
+                else:
+                    #print('b4', field.shape)
+                    #hidden.append(_inflate(field, self.k, 1))
+                    hidden.append(_inflate(field.unsqueeze(2), self.k, 2).view(1,batch_size*self.k,-1))
+                    #print('aftr', hidden[-1].shape)
+            hidden = HiddenState(*hidden)
         else:
             if isinstance(encoder_hidden, tuple):
-                hidden = tuple([_inflate(h, self.k, 1) for h in encoder_hidden])
-                print([h.shape for h in hidden])
+                #print('b4', [h.shape for h in encoder_hidden])
+                #hidden = tuple([_inflate(h, self.k, 1) for h in encoder_hidden])
+                hidden = tuple([_inflate(h.unsqueeze(2), self.k, 2).view(1,batch_size*self.k,-1) for h in encoder_hidden])
+                #print('aftr', [h.shape for h in hidden])
             else:
-                hidden = _inflate(encoder_hidden, self.k, 1)
-                print(hidden.shape)
-                
+                #print('b4a', encoder_hidden.shape)
+                #print(encoder_hidden[0, 0, :10])
+                #hidden = _inflate(encoder_hidden, self.k, 1)
+                hidden = _inflate(encoder_hidden.unsqueeze(2), self.k, 2).view(1,batch_size*self.k,-1)
+                #print('aftra', hidden.shape)
+                #print(hidden[0, :self.k, :10])
+
+        #print(encoder_outputs[0, 0, :10])
         # ... same idea for encoder_outputs and decoder_outputs
         if self.rnn.use_attention:
-            inflated_encoder_outputs = _inflate(encoder_outputs, self.k, 0)
+            #inflated_encoder_outputs = _inflate(encoder_outputs, self.k, 0)
+            inflated_encoder_outputs = _inflate(encoder_outputs.unsqueeze(1),self.k,1).view(batch_size*self.k,
+                                                                                            encoder_outputs.size(1),
+                                                                                            -1)
         else:
             inflated_encoder_outputs = None
 
-        print(inflated_encoder_outputs.shape)
-            
+        #print(inflated_encoder_outputs.shape)
+        #print(inflated_encoder_outputs[:self.k, 0, :10])
+        
         # Initialize the scores; for the first step,
         # ignore the inflated copies to avoid duplicate entries in the top k
         sequence_scores = torch.Tensor(batch_size * self.k, 1)
@@ -53,9 +84,17 @@ class BeamSearchDecoder(TopKDecoder):
         #input_var = Variable(torch.transpose(torch.LongTensor([[self.SOS] * batch_size * self.k]), 0, 1))
         #inputs is B x 1 x C (1 or 2) -> B x K x C -> B * K x C
         #decoder_inputs = decoder_inputs[:, 0].unsqueeze(1).expand(batch_size, self.k, -1).view(batch_size*self.k,-1)
+
+        lengths, counters = extras[:2]
         input_var = _inflate(decoder_inputs[:, 0].unsqueeze(1), self.k, 1).view(batch_size*self.k,1,-1)
-        counters = _inflate(extras.pop('counters').unsqueeze(1), self.k, 1).view(batch_size*self.k,-1)
-        
+        counters = _inflate(counters[:, 0].unsqueeze(1), self.k, 1).view(batch_size*self.k,1,-1)
+        extras = [None, counters] + extras[2:]
+
+        if mask is not None:
+            mask = _inflate(mask.view(batch_size, 1, -1), self.k, 1).view(batch_size*self.k, -1)
+        if copy_mask is not None:
+            copy_mask = _inflate(copy_mask.view(batch_size, 1, -1), self.k, 1).view(batch_size*self.k, -1)
+                
         # Store decisions for backtracking
         stored_outputs = list()
         stored_scores = list()
@@ -63,10 +102,15 @@ class BeamSearchDecoder(TopKDecoder):
         stored_emitted_symbols = list()
         stored_hidden = list()
 
+        #print(input_var.shape)#.view(batch_size, self.k, -1))
+        #print(counters.shape)#.view(batch_size, self.k, -1))
+        #print(sequence_scores.shape)#.view(batch_size, self.k, -1))
+        
         for step in range(0, max_length):
             # Run the RNN one step forward
             log_softmax_output, hidden, _ = self.rnn.forward_step(input_var, hidden,
-                                                                  inflated_encoder_outputs, function=function)
+                                                                  inflated_encoder_outputs, function=function,
+                                                                  copy_mask=copy_mask, mask=mask)
 
             # If doing local backprop (e.g. supervised training), retain the output layer
             if retain_output_probs:
@@ -77,13 +121,18 @@ class BeamSearchDecoder(TopKDecoder):
             sequence_scores += log_softmax_output.squeeze(1)
 
             #need to change the decode function to handle legal inputs instead of the code below
-            sequence_symbols, _, other = self.rnn.decode(step, sequence_scores, sequence_symbols=[],
-                                                         counters=counters, use_teacher_forcing=False, k=self.k,
-                                                         **extras)
-            counters, scores, predecessors = other
-            input_var = torch.cat([sequence_symbols[-1].unsqueeze(2), counters.unsqueeze(2)], dim=2)
+            sequence_symbols, input_var, extras = self.rnn.decode(step, sequence_scores, [],
+                                                         *extras, use_teacher_forcing=False, k=self.k,
+                                                         filter_illegal=filter_illegal, verbose=False)
+            #print(input_var)
+            scores, predecessors = extras[-2:]
+            #print(scores)
+            extras = extras[:-2]
+            #input_var = torch.cat([sequence_symbols[-1].unsqueeze(2), counters.unsqueeze(2)], dim=2)
             sequence_scores = scores.view(batch_size * self.k, 1)
-            predecessors = (predecessors + self.pos_index.expand_as(sequence_symbols[-1])).view(batch_size * self.k, 1)
+            #print(predecessors.shape, self.pos_index.shape, sequence_symbols[-1].shape)
+            #print(predecessors)#, self.pos_index)
+            predecessors = (predecessors + self.pos_index) #.expand_as(sequence_symbols[-1]).view(batch_size * self.k, 1)
 
             ####
             '''
@@ -102,11 +151,25 @@ class BeamSearchDecoder(TopKDecoder):
             ####
             
             # Update fields for next timestep
-            if isinstance(hidden, tuple):
-                hidden = tuple([h.index_select(1, predecessors.squeeze()) for h in hidden])
+            if isinstance(hidden, HiddenState):
+                new_hidden = []
+                for field in hidden.fields:
+                    #print(field.shape)
+                    if isinstance(field, tuple):
+                        new_hidden.append(tuple([h.index_select(1, predecessors.squeeze()) for h in field]))
+                    else:
+                        new_hidden.append(field.index_select(1, predecessors.squeeze()))
+                    
+                hidden = HiddenState(*new_hidden)
+                #print([i.shape for i in hidden.fields])
+                decoder_hidden = hidden.decoder_hidden
             else:
-                hidden = hidden.index_select(1, predecessors.squeeze())
-
+                if isinstance(hidden, tuple):
+                    hidden = tuple([h.index_select(1, predecessors.squeeze()) for h in hidden])
+                else:
+                    hidden = hidden.index_select(1, predecessors.squeeze())
+                decoder_hidden = hidden
+                
             # Update sequence scores and erase scores for end-of-sentence symbol so that they aren't expanded
             stored_scores.append(sequence_scores.clone())
             #eos_indices = input_var.data.eq(self.EOS)
@@ -117,13 +180,19 @@ class BeamSearchDecoder(TopKDecoder):
             # Cache results for backtracking
             stored_predecessors.append(predecessors)
             stored_emitted_symbols.append(sequence_symbols[-1])
-            stored_hidden.append(hidden)
+            stored_hidden.append(decoder_hidden)
 
         # Do backtracking to return the optimal values
         output, h_t, h_n, s, l, p = self._backtrack(stored_outputs, stored_hidden,
                                                     stored_predecessors, stored_emitted_symbols,
                                                     stored_scores, batch_size, self.hidden_size)
 
+        #print([i.shape for i in h_t])
+        #print([i.shape for i in h_n])
+        #print([i.shape for i in s])
+        #print([i for i in l])
+        #print([i.shape for i in p])
+        
         # Build return objects
         decoder_outputs = [step[:, 0, :] for step in output]
         if isinstance(h_n, tuple):
@@ -138,7 +207,7 @@ class BeamSearchDecoder(TopKDecoder):
         metadata['topk_length'] = l
         metadata['topk_sequence'] = p
         metadata['length'] = [seq_len[0] for seq_len in l]
-        metadata['sequence'] = [seq[0] for seq in p]
+        metadata['sequence'] = [seq[:,0] for seq in p] #CHANGED
         return decoder_outputs, decoder_hidden, metadata
 
     def _backtrack(self, nw_output, nw_hidden, predecessors, symbols, scores, b, hidden_size):
@@ -198,8 +267,14 @@ class BeamSearchDecoder(TopKDecoder):
         t = self.rnn.max_length - 1
         # initialize the back pointer with the sorted order of the last step beams.
         # add self.pos_index for indexing variable with b*k as the first dimension.
-        t_predecessors = (sorted_idx + self.pos_index.expand_as(sorted_idx)).view(b * self.k)
+        #print(sorted_idx.shape, self.pos_index.shape)
+        #CHANGED t_predecessors = (sorted_idx + self.pos_index.expand_as(sorted_idx)).view(b * self.k)
+        #print(sorted_idx)
+        #print(self.pos_index.view(b, self.k))
+        t_predecessors = (sorted_idx + self.pos_index.view(b, self.k)).view(b * self.k)
+
         while t >= 0:
+            #print(t_predecessors.view(b, self.k))            
             # Re-order the variables with the back pointer
             current_output = nw_output[t].index_select(0, t_predecessors)
             if lstm:
@@ -271,7 +346,9 @@ class BeamSearchDecoder(TopKDecoder):
         for b_idx in range(b):
             l[b_idx] = [l[b_idx][k_idx.data[0]] for k_idx in re_sorted_idx[b_idx,:]]
 
-        re_sorted_idx = (re_sorted_idx + self.pos_index.expand_as(re_sorted_idx)).view(b * self.k)
+        #print(re_sorted_idx.shape, self.pos_index.shape)
+        #CHANGED re_sorted_idx = (re_sorted_idx + self.pos_index.expand_as(re_sorted_idx)).view(b * self.k)
+        re_sorted_idx = (re_sorted_idx + self.pos_index.view(b, self.k)).view(b * self.k)
 
         # Reverse the sequences and re-order at the same time
         # It is reversed because the backtracking happens in reverse time order

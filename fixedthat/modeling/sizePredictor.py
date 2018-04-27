@@ -23,7 +23,7 @@ class SizePredictor(nn.Module):
     Outputs: 
     """
 
-    def __init__(self, input_size, hidden_size, bidirectional=False, use_attention=False):
+    def __init__(self, input_size, hidden_size, bidirectional=False, use_attention=False, full=False):
         super(SizePredictor, self).__init__()
 
         self.input_size = input_size
@@ -40,6 +40,7 @@ class SizePredictor(nn.Module):
             self.query = self.query.cuda()
         
         self.inp = nn.Linear(self.input_size, self.hidden_size)
+
         self.out = nn.Linear(self.hidden_size, 1, bias=False)
         
     def forward(self, encoder_outputs):

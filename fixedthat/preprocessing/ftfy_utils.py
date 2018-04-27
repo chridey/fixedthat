@@ -548,10 +548,14 @@ def get_all_sentence_labels(ftfy, ftfy_index, parent, parent_range, pad_to_bound
     return (ftfy_start,ftfy_end+1), (parent_start,parent_end+1), labels
 
     
-def has_all_stop_words(ftfy, ftfy_index, ftfy_range):
-    ftfy = map(lambda x:x.lower(),
-               join_sentences(get_search_string(ftfy, ftfy_index), True))[ftfy_range[0]:ftfy_range[1]]
+def has_all_stop_words(ftfy, ftfy_index=None, ftfy_range=None):
+    if ftfy_index is not None:
+        ftfy = map(lambda x:x.lower(),
+                join_sentences(get_search_string(ftfy, ftfy_index), True))
 
+    if ftfy_range is not None:
+        ftfy = ftfy[ftfy_range[0]:ftfy_range[1]]
+        
     for word in ftfy:
         if word not in stopwords and word.isalpha():
             return False
