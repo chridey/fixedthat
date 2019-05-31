@@ -1,6 +1,9 @@
 import numpy as np
 import spacy
-import HTMLParser
+try:
+    import HTMLParser
+except ImportError:
+    from html.parser import HTMLParser
 import re
 
 URL_STRING = 'u__URL__u'
@@ -10,7 +13,7 @@ HASHTAG_STRING = 'u__HASHTAG__'
 
 try:
     nlp = spacy.en.English()
-except AttributeError:
+except (AttributeError, OSError):
     nlp = spacy.load('en')
     
 stopwords = {word.lower_ for word in nlp.vocab if word.is_stop} | {"'re", "'nt", "'s", "'ll", "'d", "'ve", "'m",
@@ -182,25 +185,25 @@ def get_ftfy_index(metadata):
         if 'ftfy' in ' '.join(sent_metadata['words']).lower() and ftfy_index is None:
             return index
 
-def join_sentences(sentences, skip_strikethrough=False):
+def join_sentences(sentences, skip_strikethrough=False, key='words'):
     text = []
     for index, sentence in enumerate(sentences):
         if skip_strikethrough:
             words = []
             in_skip = False
             curr_tildes = ''
-            for word in sentence['words']:
+            for token,word in zip(sentence[key], sentence['words']):
                 if not in_skip:
                     if word.startswith('~~'):
                         if not word.endswith('~~'):
                             in_skip = True
                     elif not word.endswith('~~'):
-                        words.append(word)
+                        words.append(token)
                 elif word.endswith('~~'):
                     in_skip = False
             text.extend(words)
         else:
-            text.extend(sentence['words'])
+            text.extend(sentence[key])
     return text
 
 def split_ftfy(tokenized_ftfy):
@@ -562,12 +565,12 @@ def has_all_stop_words(ftfy, ftfy_index=None, ftfy_range=None):
 
     return True
     
-def get_ftfy(metadata):
+def get_ftfy(metadata, key='words'):
     ftfy = metadata['ftfy_metadata']
     ftfy_index = metadata['ftfy_index']
-    return join_sentences(get_search_string(ftfy, ftfy_index), True)
+    return join_sentences(get_search_string(ftfy, ftfy_index), True, key=key)
 
-def get_parent_window(metadata, padded=False):
+def get_parent_window(metadata, padded=False, key='words'):
     parent = metadata['{}_metadata'.format(metadata['best'])]
     if padded:
         left_boundary, right_boundary = get_nearest_boundary(parent, metadata['best_range'])
@@ -575,7 +578,7 @@ def get_parent_window(metadata, padded=False):
     else:
         best_range = metadata['best_range']
     
-    return join_sentences(parent)[best_range[0]:best_range[1]]
+    return join_sentences(parent, key=key)[best_range[0]:best_range[1]]
 
 def get_adjusted_range(metadata):
     parent = metadata['{}_metadata'.format(metadata['best'])]
