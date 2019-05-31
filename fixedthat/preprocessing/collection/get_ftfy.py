@@ -1,3 +1,10 @@
+'''
+script for retrieving comments containing FTFY
+Usage: get_ftfy.py <start_date> <end_date> <OPTIONAL: keywords>
+dates should be formatted YYYYMMDD
+default keywords are FTFY
+'''
+
 from __future__ import print_function
 import bz2
 import lzma
@@ -11,10 +18,6 @@ if False:
 else:
     import datetime
     
-#http://files.pushshift.io/reddit/comments/RC_2005-12.bz2
-#http://files.pushshift.io/reddit/submissions/RS_2006-01.bz2
-#bz2.BZ2Decompressor
-
 start_date = sys.argv[1]
 end_date = sys.argv[2]
 if len(sys.argv) > 3:
@@ -54,8 +57,6 @@ start_date = datetime.datetime.strptime(start_date, "%Y%m%d")
 end_date = datetime.datetime.strptime(end_date, "%Y%m%d")
 date = start_date
 while date <= end_date:
-#for date in pd.date_range('20120901', '20170901', freq='MS'):
-#for date in pd.date_range(start_date, end_date, freq='MS'):
     parents = set()
     count = 0
     with gzip.open('{}-{}.{}.gz'.format(date.year, date.month, '.'.join(keywords)), 'w') as f:
@@ -69,12 +70,6 @@ while date <= end_date:
                     f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
                     break
 
-            '''
-            if any(k in j['body'].lower() for k in keywords): #'ftfy' in j['body'].lower():
-                count += 1
-                parents.add(j['parent_id'])
-                f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
-            '''
     print(count)
     
     with gzip.open('{}-{}.{}.parents.gz'.format(date.year, date.month, '.'.join(keywords)), 'w') as f:
