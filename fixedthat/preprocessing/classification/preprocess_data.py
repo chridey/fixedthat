@@ -14,7 +14,7 @@ import pandas as pd
 
 import ftfy_utils as ut
 import transition_utils as tut
-import data_quality as dq
+from fixedthat.preprocessing.classification import data_quality as dq
 
 def iter_data(infile, opt, lookup, predictions=None, verbose=True):
     totals = collections.Counter()    
