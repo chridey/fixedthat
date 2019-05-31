@@ -1,3 +1,10 @@
+'''
+methods and script for training classifier described in Section 3.2 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+usage: data_quality.py <trainfile> <word_vectors_file> <OPTIONAL: save_file>
+
+The script will extract features from trainfile, add word embedding features from word_vectors_file, and train a model and save it to save_file if provided
+'''
+
 import math
 import csv
 import json
@@ -25,12 +32,16 @@ subset_keys_full = [['full_sim'], ['align_sim'], ['full_parent_vocab'],
                    list(map(lambda x: 'af{}'.format(x), range(50)))]
 feature_keys = list(itertools.chain(*(subset_keys + subset_keys_full)))
 
-def load_word_vectors(filename, small=False):
+def load_word_vectors(filename):
     print('loading word vectors...')
     print(filename)
     return gensim.models.KeyedVectors.load_word2vec_format(filename, binary=False)
 
 def load_training(trainfile):
+    '''
+    reads data from a file annotated for the categories described in Section 3.2
+    '''
+    
     data = []
     with open(trainfile) as f:
         reader = csv.DictReader(f, delimiter='\t')
@@ -62,6 +73,9 @@ def load_training(trainfile):
 
 def valid_row(row, include_stop=False, ratio=9, max_parent_length=50, max_ftfy_length=50,
               min_parent_length=1, min_ftfy_length=1):
+    '''
+    checks if an example fulfills the constraints described in the parameters
+    '''
     
     if (not include_stop and ut.has_all_stop_words(row['ftfy'], None, row['ftfy_range'])) \
         or 1. * len(row['parent']) / len(row['ftfy']) > ratio or len(row['parent']) > max_parent_length \
@@ -73,6 +87,9 @@ def valid_row(row, include_stop=False, ratio=9, max_parent_length=50, max_ftfy_l
 
 def make_predictions(features, model, include_stop=False, ratio=9, max_parent_length=50, max_ftfy_length=50,
                     min_parent_length=4, min_ftfy_length=2, filter_features=True):
+    '''
+    given the model and any hard constraints, returns a list of binary predictions
+    '''
 
     predictions = model.predict(features[feature_keys])
 
@@ -87,6 +104,10 @@ def make_predictions(features, model, include_stop=False, ratio=9, max_parent_le
     return predictions
     
 def get_features(df, word_vectors, filter_threshold=False):
+    '''
+    creates the features described in Section 3.2
+    '''
+    
     features = []
 
     for idx,row in df.iterrows():
@@ -188,13 +209,6 @@ def validate_model(features, labels):
     pls = [4]
     fls = [2]
 
-    '''
-    model_types = [(LogisticRegression, {'penalty':'l1'}),
-                   (LogisticRegression, {'penalty':'l2'}),
-                   (SVC, {'kernel':'linear'}),
-                   (SVC, {'kernel':'rbf'}),
-                   (SVC, {'kernel':'poly'})]
-    '''
     model_types = [(LogisticRegression, {'penalty':'l2'})]
     class_weights = [None]
     Cs = [.01]
@@ -204,9 +218,6 @@ def validate_model(features, labels):
         for C in Cs:
             for class_weight in class_weights:
                 print(model_type, extra_params, C, class_weight)
-                #clf = SVC(kernel=kernel, C=C, class_weight=class_weight)
-                #clf = SVC(kernel='linear', C=0.01)
-                #clf = SVC(kernel=kernel, C=C, class_weight=class_weight)
 
                 clf = model_type(C=C, class_weight=class_weight, **extra_params)
                     
@@ -214,15 +225,13 @@ def validate_model(features, labels):
                 clf.fit(features[feature_keys][:split_size], labels[:split_size])
                 print('making predictions...')
                 predictions = make_predictions(features[split_size:], clf)
-                #predictions = clf.predict(features[split_size:])
-                #predictions *= np.array(~((features[split_size:]['parent_length'] < pl/50.) | (features[split_size:]['ftfy_length'] < fl/50.)))
+
                 s1 = sum(predictions)
                 p1, r1, f1, s = precision_recall_fscore_support(labels[split_size:], predictions)
 
                 clf.fit(features[feature_keys][split_size:], labels[split_size:])
                 predictions = make_predictions(features[:split_size], clf)
-                #predictions = clf.predict(features[:split_size])
-                #predictions *= np.array(~((features[:split_size]['parent_length'] < pl/50.) | (features[:split_size]['ftfy_length'] < fl/50.)))
+
                 s2 = sum(predictions)
                 p2, r2, f2, s = precision_recall_fscore_support(labels[:split_size], predictions)
 

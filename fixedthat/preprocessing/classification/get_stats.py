@@ -1,3 +1,11 @@
+'''
+reads in the file produced in collection and derives overlap features for use in classification
+usage: get_stats.py <infile> <optional: stats_file>
+
+writes to stdout
+stats_file may be pre-computed
+'''
+
 from __future__ import print_function
 
 import json

@@ -1,3 +1,8 @@
+'''
+script to split the data into training, validation, and testing using different criteria for filtering
+examples can be written as a sequence of words or edits, as described in Section 4.2 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 from __future__ import print_function
 
 import collections
@@ -5,8 +10,6 @@ import sys
 import datetime
 import json
 import argparse
-
-#import pandas as pd
 
 import six
 import numpy as np
@@ -166,7 +169,6 @@ if opt.use_model:
                 yield row.to_dict(), row['ftfy'], row['parent'], row['copy']
 
     iterator = iterator()
-#TODO: make sure sie of predictions is same
     
 parents = []
 parent_copies = []
@@ -180,10 +182,6 @@ for idx, (j, ftfy, parent, copy) in enumerate(iterator):
 
     if opt.add_copy:
         parent_copies.append(copy)
-        #path = j['full_path']
-        #best_range = ut.get_adjusted_range(j)            
-        #parent_copy = tut.path2copy(path, parent, best_range, ftfy)
-        #parent_copies.append(parent_copy)            
 
     if opt.output_path:
         path = j['full_path']
@@ -192,8 +190,6 @@ for idx, (j, ftfy, parent, copy) in enumerate(iterator):
             transitions = tut.path2edits(path, parent, best_range, ftfy)
             reconstructed_ftfy = tut.edits2ftfy(transitions)
                         
-            #transitions = tut.path2transitions(path, parent, best_range, ftfy)
-            #reconstructed_ftfy = tut.transitions2ftfy(transitions, parent)
         except IndexError:
             transitions = []
             reconstructed_ftfy = []
@@ -205,7 +201,6 @@ for idx, (j, ftfy, parent, copy) in enumerate(iterator):
         else:
             totals['bad_transitions'] += 1
             #if we cant match this, shift everything from the source and generate everything from the target
-            #ftfy = ['SHIFT'] * len(parent) + map(lambda x:x.lower(), ftfy) + ['REDUCE']
             ftfy = parent + ['DELETE-{}'.format(len(parent))] + map(lambda x:x.lower(), ftfy)            
             print(parent)            
             print(ftfy)
@@ -215,7 +210,6 @@ for idx, (j, ftfy, parent, copy) in enumerate(iterator):
             
     if opt.add_subreddit:
         ftfy.insert(0, '__2__' + j['subreddit'] + '__')
-        #parent.insert(0, '__2__' + j['subreddit'] + '__')
 
     parents.append(parent)
     ftfys.append(ftfy)
@@ -240,19 +234,11 @@ with open(opt.outfile + '.tsv', 'w') as f:
         if not opt.output_path:
             ftfy = ftfy.lower()
             
-        #if opt.add_subreddit:
-        #    ftfy.replace('u__subreddit__', '')
-
         parent = ' '.join(parents[i]).encode('utf-8').lower().replace("\t", "").replace("\r", "").replace("\xc2\xa0", '').replace('\x1e', '')
-        #if opt.add_subreddit:
-        #    parent.replace('u__subreddit__', '')
             
         if len(six.text_type(parent, encoding='utf-8').split()) != len(parent_copies[i]):
             continue
 
-        #if opt.add_subreddit:
-        #    ftfy = [ftfy[0], ftfy[1:]]
-        #else:
         ftfy = [ftfy]
         
         if opt.add_copy:
@@ -268,8 +254,3 @@ with open(opt.outfile + '.tsv', 'w') as f:
             output.append(json.dumps(full_json[i]))
                                 
         print("\t".join(output), file=f)
-
-        #TODO: replace ftfy, replace 'u / USER' with u__username__ and 'r / SUBREDDIT' with u__subreddit__SUBREDDIT
-        #remove parents who's entire comment is a url
-        
-#1105609
