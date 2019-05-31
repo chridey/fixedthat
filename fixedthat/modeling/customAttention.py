@@ -29,17 +29,31 @@ class Attention(nn.Module):
          >>> output = Variable(torch.randn(5, 5, 256))
          >>> output, attn = attention(output, context)
     """
-    def __init__(self, dim, copy_predictor=False):
+    def __init__(self, dim, copy_predictor=False, attn_type='dot'):
         super(Attention, self).__init__()
         self.multiplier = 2
         if copy_predictor:
             self.multiplier = 3
+
+        assert(attn_type in ('dot', 'bahdanau'))
             
         self.linear_out = nn.Linear(dim*self.multiplier, dim)
                         
         self.mask = None
 
         self.copy_predictor = copy_predictor
+        if copy_predictor:
+            attn_type = 'bahdanau'
+
+        self.attn_type = attn_type
+
+        if attn_type == 'bahdanau':
+            self.w_hs = nn.Linear(2*dim, dim)
+            self.v = nn.Linear(dim, 1)
+        
+        if copy_predictor:
+            self.w_hs_copy = nn.Linear(2*dim, dim)
+            self.v_copy = nn.Linear(dim, 1)
 
     def set_mask(self, mask):
         """
@@ -53,6 +67,7 @@ class Attention(nn.Module):
         batch_size = output.size(0)
         hidden_size = output.size(2)
         input_size = context.size(1)
+        output_size = output.size(1)
 
         '''
         if self.copy_predictor:
@@ -63,7 +78,14 @@ class Attention(nn.Module):
         '''
         
         # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)        
-        attn = torch.bmm(output, context.transpose(1, 2))
+        if getattr(self, 'attn_type', 'dot') == 'dot':
+            attn = torch.bmm(output, context.transpose(1, 2))
+        else:
+            output_e = output.unsqueeze(2).expand(batch_size, output_size, input_size, hidden_size)
+            context_e = context.unsqueeze(1).expand(batch_size, output_size, input_size, hidden_size)
+            attn = self.v(self.w_hs(torch.cat([output_e, context_e], dim=3))).squeeze(3)
+            
+
         if self.mask is not None:
             #attn.data.masked_fill_(mask, -float('inf'))
             attn.data.masked_fill_(mask.data.ne(2), -float('inf'))
@@ -72,6 +94,12 @@ class Attention(nn.Module):
         # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
 
         if self.copy_predictor:
+            attn1 = attn2 = attn
+            if getattr(self, 'attn_type', 'dot') != 'dot':
+                output_e = output.unsqueeze(2).expand(batch_size, output_size, input_size, hidden_size)
+                context_e = context.unsqueeze(1).expand(batch_size, output_size, input_size, hidden_size)
+                attn2 = self.v_copy(self.w_hs_copy(torch.cat([output_e, context_e], dim=3))).squeeze(3)
+
             # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)
             #TODO: separate attention
             #copy_attn = torch.bmm(output, copy_context.transpose(1, 2))
@@ -81,8 +109,8 @@ class Attention(nn.Module):
 
             # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
             mask_e = copy_mask.view(batch_size, -1, input_size).expand_as(attn)
-            sub_attn = (1-mask_e).float() * attn * mask.view(batch_size, -1, input_size).expand_as(attn).ne(2).float()
-            copy_attn = mask_e.float() * attn * mask.view(batch_size, -1, input_size).expand_as(attn).ne(2).float()
+            sub_attn = (1-mask_e).float() * attn1 * mask.view(batch_size, -1, input_size).expand_as(attn).ne(2).float()
+            copy_attn = mask_e.float() * attn2 * mask.view(batch_size, -1, input_size).expand_as(attn).ne(2).float()
             
             sub_mix = torch.bmm(sub_attn, context)            
             copy_mix = torch.bmm(copy_attn, context)            

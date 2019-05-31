@@ -23,7 +23,7 @@ class CopyPredictor(nn.Module):
     Outputs: 
     """
 
-    def __init__(self, input_size, hidden_size, bidirectional=False, use_attention=False, beta=0, gamma=(1-10e-5)):
+    def __init__(self, input_size, hidden_size, bidirectional=False, use_attention=False, beta=0, gamma=(1-10e-5), crf=False):
         super(CopyPredictor, self).__init__()
 
         self.input_size = input_size
@@ -68,10 +68,16 @@ class CopyPredictor(nn.Module):
         else:
             self.beta = 0
     
-    def forward(self, encoder_outputs, mask):
+    def _get_logits(self, output, batch_size, input_size):
+        input_hid = F.relu(self.inp(output.contiguous().view(batch_size*input_size, -1)))
+        prediction = F.sigmoid(self.out(input_hid).view(batch_size, input_size)).transpose(0,1).contiguous()
+        return prediction
+
+    def forward(self, encoder_outputs, mask=None, input_lengths=None):
         
         if mask is not None and self.beta==1:
-            return mask, None, None
+            #return mask, None, None
+            return mask.transpose(0,1).contiguous().float(), None, None
         
         batch_size, input_size = self._validate_args(encoder_outputs)
 
@@ -89,17 +95,26 @@ class CopyPredictor(nn.Module):
         else:
             output = encoder_outputs
             
-        input_hid = F.relu(self.inp(output.contiguous().view(batch_size*input_size, -1)))
-        prediction = F.sigmoid(self.out(input_hid).view(batch_size, input_size)).transpose(0,1).contiguous()
+        prediction = self._get_logits(output, batch_size, input_size)
 
         #print(prediction.transpose(0,1).shape)
         #print(list(enumerate(prediction.transpose(0,1))))
 
         #for interpolating between gold and predicted during training
         #print(mask.shape, prediction.shape)
-        prediction = self.beta*mask.transpose(0,1).float() + (1-self.beta)*prediction
+        scores = self.beta*mask.transpose(0,1).float() + (1-self.beta)*prediction
+        predictions = (scores+0.5).long()
         
-        return prediction, None, {'attention_score': attn, 'sequence': (prediction+0.5).long()} #[torch.exp(prediction).long()]}
+        return scores, None, {'attention_score': attn, 'sequence': predictions} #[torch.exp(prediction).long()]}
+
+    def score(self, logits, y, lens):
+        y_exp = y.unsqueeze(-1)
+        scores = torch.gather(logits, 2, y_exp).squeeze(-1)
+        mask = sequence_mask(lens).float()
+        scores = scores * mask
+        score = scores.sum(1).squeeze(-1)
+
+        return score
 
     def _validate_args(self, encoder_outputs):
                     

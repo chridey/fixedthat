@@ -6,6 +6,11 @@ import argparse
 import logging
 
 import torch
+if torch.cuda.is_available():
+    print('using GPU...')
+else:
+    print('using CPU...')
+
 from torch.optim.lr_scheduler import StepLR
 import torchtext
 
@@ -16,7 +21,8 @@ from seq2seq.loss import Perplexity
 from seq2seq.optim import Optimizer
 from seq2seq.dataset import SourceField, TargetField
 from seq2seq.evaluator import Predictor
-from seq2seq.util.checkpoint import Checkpoint
+#from seq2seq.util.checkpoint import Checkpoint
+from fixedthat.modeling.customCheckpoint import CustomCheckpoint as Checkpoint
 
 from fixedthat.modeling.fields import CustomTargetField
 from fixedthat.modeling.customDecoderRNN import CustomDecoderRNN
@@ -83,6 +89,18 @@ parser.add_argument('--filter_illegal', action='store_true')
 parser.add_argument('--batch_size', type=int, default=100)
 parser.add_argument('--beam_width', type=int, default=10)
 parser.add_argument('--use_prefix', action='store_true')
+parser.add_argument('--lamda', type=int, default=1)
+parser.add_argument('--beta', type=int, default=0)
+parser.add_argument('--gamma', type=float, default=0)
+parser.add_argument('--cce', action='store_true')
+parser.add_argument('--cce_field', action='store_true')
+
+parser.add_argument('--extra_fields')
+
+parser.add_argument('--min_freq', type=int, default=4)
+
+parser.add_argument('--attn_type', default='dot')
+parser.add_argument('--copy_attn', action='store_true')
 
 opt = parser.parse_args()
 
@@ -110,14 +128,35 @@ if not opt.no_text:
     tgt = TargetField() #counter=True) #add_start=False)
 
 used_fields=[('src', src)]
+#if not opt.translate:
 if opt.no_text:
     used_fields.append(('tgt', extra_tgt))
 else:
     used_fields.append(('tgt', tgt))
     if extra_tgt is not None:
         used_fields.append(('extra', extra_tgt))
+if opt.cce:
+    assert(opt.cce_field)
+if opt.cce_field:
+    used_fields.append(('cce', tgt))
 
+extra_features = []
+max_features_nums = None
+feature_hidden_sizes = None
+if opt.extra_fields:
+    extra_fields = opt.extra_fields.split(',')
+    max_features_nums = []
+    feature_hidden_sizes = []
+    for i in range(len(extra_fields)):
+        max_features_nums.append(int(extra_fields[i].split(':')[0]))
+        feature_hidden_sizes.append(int(extra_fields[i].split(':')[1]))
+
+        extra_features.append(torchtext.data.Field(batch_first=True, fix_length=1, lower=True,
+                                                          tokenize=lambda x:[x]))
+        used_fields.append(('features{}'.format(i), extra_features[-1]))
         
+print(used_fields)
+
 max_len = 50 
 def len_filter(example):
     try:
@@ -133,6 +172,8 @@ if opt.load_checkpoint is not None:
     seq2seq = checkpoint.model
     input_vocab = checkpoint.input_vocab
     output_vocab = checkpoint.output_vocab
+    
+    extra_vocabs = checkpoint.extra_vocabs
 else:
 
     
@@ -149,13 +190,13 @@ else:
         fields=used_fields,
         filter_pred=len_filter
     )
-    src.build_vocab(train, min_freq=4) #max_size=50000)
+    src.build_vocab(train, min_freq=opt.min_freq) #max_size=50000)
     input_vocab = src.vocab
     #TODO if args.counter
     #tgt.build_vocab([zip(*x)[0] for x in train.tgt], max_size=50000)
     #else
     if not opt.no_text: #opt.copy_predict and not opt.size:
-        tgt.build_vocab(train, min_freq=4) #max_size=50000)
+        tgt.build_vocab(train, min_freq=opt.min_freq) #max_size=50000)
         output_vocab = tgt.vocab
     else:
         tgt.vocab = None
@@ -169,6 +210,11 @@ else:
     # seq2seq.src_field_name = 'src'
     # seq2seq.tgt_field_name = 'tgt'
 
+    extra_vocabs = []
+    for idx, feature in enumerate(extra_features):
+        feature.build_vocab(train, max_size=max_features_nums[idx]-2)
+        extra_vocabs.append(feature.vocab)
+
     # Prepare loss
     if output_vocab is not None:
         weight = torch.ones(len(tgt.vocab))
@@ -178,7 +224,7 @@ else:
 
     #TODO: combined loss
     if multi_task:
-        loss = MTLLoss([Perplexity(weight, pad), BCELoss(pad=2)], lambdas=[1,10]) #Perplexity(weight, pad) #
+        loss = MTLLoss([Perplexity(weight, pad), BCELoss(pad=2)], lambdas=[1,opt.lamda]) #Perplexity(weight, pad) #
     elif opt.size:
         #loss = PoissonLoss()#log_input=True)
         loss = MSELoss()
@@ -207,14 +253,16 @@ else:
         copy_predictor=None
         if opt.copy_predict:
             copy_predictor = CopyPredictor(hidden_size * 2 if bidirectional else hidden_size, hidden_size,
-                                            bidirectional=bidirectional, use_attention=True)
+                                            bidirectional=bidirectional, use_attention=True, beta=opt.beta, gamma=opt.gamma)
         if opt.counter:
             decoder_type = CustomDecoderRNN
             seq2seq_type = CustomSeq2seq
             decoder = decoder_type(src.vocab, tgt.vocab, max_len, hidden_size * 2 if bidirectional else hidden_size,
                                    dropout_p=0.2, use_attention=True, bidirectional=bidirectional,
                                    eos_id=tgt.eos_id, sos_id=tgt.sos_id, count_hidden_size=opt.count_hidden_size,
-                                   copy_predictor=opt.copy_predict)
+                                   copy_predictor=opt.copy_predict and opt.copy_attn, 
+                                   max_features_nums=max_features_nums, 
+                                   feature_hidden_sizes=feature_hidden_sizes, pad=pad, attn_type=opt.attn_type, cce=opt.cce)
         elif opt.size:
             decoder = SizePredictor(hidden_size * 2 if bidirectional else hidden_size, hidden_size,
                                       bidirectional=bidirectional, use_attention=True)
@@ -258,11 +306,12 @@ else:
                           filter_illegal=opt.filter_illegal,
                           use_prefix=opt.use_prefix) #, prediction_dir=opt.expt_dir)
     t = SupervisedTrainer(loss=loss, batch_size=opt.batch_size, #32,
-                          checkpoint_every=1000,
+                          checkpoint_every=5000,
                           print_every=10, expt_dir=opt.expt_dir,
                           evaluator=evaluator,
                           filter_illegal=opt.filter_illegal,
-                          use_prefix=opt.use_prefix)
+                          use_prefix=opt.use_prefix,
+                          extra_vocabs=extra_vocabs)
 
     seq2seq = t.train(seq2seq, train,
                       num_epochs=opt.num_epochs, dev_data=dev,
@@ -272,6 +321,7 @@ else:
 
 if opt.translate:    
     #if opt.counter or opt.transducer:
+    seq2seq.copy_predictor = None
     if multi_task or (not opt.size and not opt.copy_predict):
         seq2seq.decoder = BeamSearchDecoder(seq2seq.decoder, opt.beam_width)
         predictor = CustomPredictor(seq2seq, input_vocab, output_vocab)
@@ -281,7 +331,7 @@ if opt.translate:
     #predictor = Predictor(seq2seq, input_vocab, output_vocab)
 
     if opt.translate_path:
-        f = open(opt.translate_path, 'w')
+        f = open(opt.translate_path, 'w', 0)
     else:
         f = sys.stdout
 
@@ -293,13 +343,15 @@ if opt.translate:
         )
         src.vocab = input_vocab
         tgt.vocab = output_vocab
-        
-        if opt.counter:
-            output = predictor.predict_batch(test, opt.batch_size/opt.beam_width,
-                                             file_handle=f, use_counter=opt.counter) #start=1, end=opt.max_range)
-        else:
-            output = predictor.predict_batch(test, opt.batch_size/opt.beam_width,
-                                             file_handle=f, use_counter=opt.counter)
+
+        for idx in range(len(extra_features)):
+            extra_features[idx].vocab = extra_vocabs[idx]
+            
+        output = predictor.predict_batch(test, opt.batch_size//opt.beam_width,
+                                             file_handle=f, use_counter=opt.counter,
+                                             filter_illegal=opt.filter_illegal,
+                                             use_prefix=opt.use_prefix,
+                                         max_range=opt.max_range) #start=1, end=opt.max_range)
 
         #for seq in output:
         #    print(' '.join(seq), file=f)

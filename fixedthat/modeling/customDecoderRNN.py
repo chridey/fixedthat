@@ -1,3 +1,5 @@
+import collections
+
 import random
 
 import numpy as np
@@ -18,6 +20,20 @@ from fixedthat.preprocessing import ftfy_utils as ut
 from seq2seq.models import DecoderRNN
 
 from fixedthat.modeling.customAttention import Attention
+
+def get_specials(vocab):
+    specials = ut.stopwords | \
+                       set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | \
+                       set(j for j in vocab if all(map(lambda x: not x.isalnum(), j))) | \
+                       set(j for j in vocab if j.startswith('DELETE'))
+    return specials
+
+def get_target_specials(specials, vocab, eos_id, sos_id, pad=None):
+    target_specials = {vocab[i] for i in specials} | {0, eos_id, sos_id}
+    if pad is not None:
+        target_specials.add(pad)
+    return target_specials
+
 
 class CustomDecoderRNN(DecoderRNN):
     r"""
@@ -68,7 +84,8 @@ class CustomDecoderRNN(DecoderRNN):
             sos_id, eos_id,
             n_layers=1, rnn_cell='gru', bidirectional=False,
             input_dropout_p=0, dropout_p=0, use_attention=False,
-            max_count=50, count_hidden_size=15, copy_predictor=False):
+            max_count=50, count_hidden_size=15, copy_predictor=False,
+                 max_features_nums=None, feature_hidden_sizes=None, pad=None, attn_type='dot', cce=False):
         super(CustomDecoderRNN, self).__init__(len(target_vocab), max_len, hidden_size,
                 input_dropout_p, dropout_p,
                 n_layers, rnn_cell)
@@ -79,7 +96,10 @@ class CustomDecoderRNN(DecoderRNN):
         self.target_vocab = target_vocab
         
         self.bidirectional_encoder = bidirectional
-        self.rnn = self.rnn_cell(hidden_size+count_hidden_size,
+        sum_feature_hidden_sizes = 0
+        if feature_hidden_sizes is not None:
+            sum_feature_hidden_sizes = sum(feature_hidden_sizes)
+        self.rnn = self.rnn_cell(hidden_size+count_hidden_size+sum_feature_hidden_sizes,
                                  hidden_size,
                                  n_layers, batch_first=True, dropout=dropout_p)
 
@@ -92,6 +112,7 @@ class CustomDecoderRNN(DecoderRNN):
         self.use_attention = use_attention
         self.eos_id = eos_id
         self.sos_id = sos_id
+        self.pad = pad
 
         self.init_input = None
 
@@ -100,24 +121,57 @@ class CustomDecoderRNN(DecoderRNN):
         if self.count_hidden_size:
             self.count_embedding = nn.Embedding(self.max_count, self.count_hidden_size)
 
+        self.feature_hidden_sizes = feature_hidden_sizes
+        self.max_features_nums = max_features_nums
+        if max_features_nums is not None and len(max_features_nums):
+            assert(feature_hidden_sizes is not None)
+            assert(len(feature_hidden_sizes) == len(max_features_nums))
+
+            for idx in range(len(max_features_nums)):
+                if feature_hidden_sizes[idx] > 0:
+                    setattr(self, 'feature_embeddings' + str(idx), nn.Embedding(max_features_nums[idx], 
+                                                                            feature_hidden_sizes[idx]))
+
         self.copy_predictor = copy_predictor
             
         if use_attention:
-            self.attention = Attention(self.hidden_size, copy_predictor)
+            self.attention = Attention(self.hidden_size, copy_predictor, attn_type=attn_type)
                 
             #self.out = nn.Linear(2*self.hidden_size, self.output_size)
         #else:
         self.out = nn.Linear(self.hidden_size, self.output_size)
 
         self.copy = False
-        if self.copy:
-            self.gen = nn.Linear(3*self.hidden_size, 1)
+        self.cce = cce
+        if self.cce:
+            self.gen = nn.Linear(3*self.hidden_size+self.count_hidden_size, 1)
         
         #remove some characters like . that are "free" ie if not in input we can generate them
-        self.specials = {self.source_vocab.stoi[i] for i in (ut.stopwords | set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | set(j for j in self.target_vocab.stoi if all(map(lambda x: not x.isalnum(), j))))} | {0}
-        self.target_specials = {self.target_vocab.stoi[self.source_vocab.itos[i]] for i in self.specials} - {0}
-        
-    def forward_step(self, input_var, hidden, encoder_outputs, function, mask=None, copy_mask=None):
+        #self.specials = frozenset({self.source_vocab.stoi[i] for i in (ut.stopwords | set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | set(j for j in self.target_vocab.stoi if all(map(lambda x: not x.isalnum(), j))) | set(j for j in self.target_vocab.stoi if j.startswith('DELETE')))} | {0})
+        #self.target_specials = frozenset({self.target_vocab.stoi[self.source_vocab.itos[i]] for i in self.specials} - {0})
+
+    @property
+    def specials(self):
+        if getattr(self, '_specials', None) is None:
+            specials = ut.stopwords | \
+                       set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | \
+                       set(j for j in self.target_vocab.stoi if all(map(lambda x: not x.isalnum(), j))) | \
+                       set(j for j in self.target_vocab.stoi if j.startswith('DELETE'))
+            setattr(self, '_specials', specials)
+            print(len(specials))
+        return self._specials
+
+    @property
+    def target_specials(self):
+        if getattr(self, '_target_specials', None) is None:
+            target_specials = {self.target_vocab.stoi[i] for i in self.specials} | {0, self.eos_id, self.sos_id}
+            if self.pad is not None:
+                target_specials.add(self.pad)
+            setattr(self, '_target_specials', target_specials)
+            print(len(target_specials))
+        return self._target_specials
+
+    def forward_step(self, input_var, hidden, encoder_outputs, function, mask=None, copy_mask=None, cce_keywords=None):
         #print(input_var)
         
         batch_size = input_var.size(0)
@@ -131,26 +185,70 @@ class CustomDecoderRNN(DecoderRNN):
 
             embedded = torch.cat([embedded, count_embedded], dim=2)
         
+        if getattr(self, 'feature_hidden_sizes', None) is not None:
+            for idx in range(len(self.feature_hidden_sizes)):
+                if self.feature_hidden_sizes[idx] <= 0:
+                    continue
+                feature_embedding = getattr(self, 'feature_embeddings' + str(idx))
+                #print(input_var[:, :, idx+2].max())
+                feature_embedded = feature_embedding(input_var[:, :, idx+2])
+                feature_embedded = self.input_dropout(feature_embedded)
+            
+                embedded = torch.cat([embedded, feature_embedded], dim=2)
+
         output, hidden = self.rnn(embedded, hidden)
 
         attn = None
         if self.use_attention:                                             
-            output, attn = self.attention(output, encoder_outputs, mask, copy_mask)
+            attended_output, attn = self.attention(output, encoder_outputs, mask, copy_mask)
+        else:
+            attended_output = output
         #print(encoder_outputs, attn)
-            
+         
+        logits = self.out(attended_output.contiguous().view(-1,
+                                                            self.hidden_size))
+        '''        
         predicted_softmax = function(self.out(output.contiguous().view(-1,
-                                                                       self.hidden_size))).view(batch_size,
-                                                                                                       output_size,
-                                                                                                       -1)
-        if False: #self.copy:
-            output = torch.cat([output, embedded], dim=2)
-            p_gen = F.sigmoid(self.gen(output.view(-1, 3*self.hidden_size))).view(batch_size, output_size)
-        
+                                                            self.hidden_size))).view(batch_size,
+                                                                                    output_size,
+                                                                                    -1)
+        '''
+
+        if self.cce: #self.copy:
+            keyword_mask = Variable(torch.zeros(batch_size, output_size, logits.size(-1)).cuda())
+            #print(keyword_mask.shape, cce_keywords.shape, batch_size, output_size)
+            keyword_mask.scatter_(2, cce_keywords.unsqueeze(1).expand((batch_size, output_size, cce_keywords.size(-1))), 1)
+            keyword_mask[:, :, 0] = 0 #UNK
+            keyword_mask[:, :, self.sos_id] = 0
+            keyword_mask[:, :, self.eos_id] = 0
+            if getattr(self, 'pad', None) is not None:
+                keyword_mask[:, :, self.pad] = 0
+            renormalized_keyword_probs = F.softmax(logits * keyword_mask.contiguous().view(batch_size*output_size,-1)).view(batch_size,output_size,-1)
+            probs = F.softmax(logits).view(batch_size,output_size,-1)
+
+            combined_output = torch.cat([attended_output, output, embedded], dim=2)
+            p_gen = F.sigmoid(self.gen(combined_output.view(-1, 3*self.hidden_size+self.count_hidden_size))).view(batch_size, output_size, 1)
+            #print(p_gen[0])
+            probs = keyword_mask*renormalized_keyword_probs*p_gen + keyword_mask.eq(0).float()*probs*(1-p_gen)
+            predicted_softmax = torch.log(probs)
+        else:
+            predicted_softmax = function(logits).view(batch_size,output_size,-1)
+
         return predicted_softmax, hidden, attn
 
     def decode(self, step, decoder_outputs, sequence_symbols=None, lengths=None,
                counters=None, encoder_input_lookup=None, encoder_input_data=None, 
-               use_teacher_forcing=True, k=1, filter_illegal=True, verbose=False):
+               use_teacher_forcing=True, k=1, filter_illegal=True, verbose=False, features=None, cce_keywords=None):
+
+        #print(ut.stopwords)
+        '''
+        if filter_illegal and len(self.specials) < len(ut.stopwords):
+            self.specials = frozenset({self.source_vocab.stoi[i] for i in (ut.stopwords | set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | set(j for j in self.target_vocab.stoi if all(map(lambda x: not x.isalnum(), j))) | set(j for j in self.target_vocab.stoi if j.startswith('DELETE')))} | {0})
+            self.target_specials = frozenset({self.target_vocab.stoi[self.source_vocab.itos[i]] for i in self.specials} - {0})
+        '''
+
+        #print({self.source_vocab.itos[i] for i in specials})
+        #print({self.target_vocab.itos[i] for i in target_specials})
 
         if not use_teacher_forcing:
             symbols = []
@@ -171,11 +269,22 @@ class CustomDecoderRNN(DecoderRNN):
                 print([q % vocab_size for q in top_symbols[0]])
                 print('tokens', [self.target_vocab.itos[q % vocab_size] for q in top_symbols[0]])
                 print(current_counters[0])
+                if cce_keywords is not None:
+                    print('keywords', [self.target_vocab.itos[q.data[0]] for q in cce_keywords[0][:10]])
 
+            if getattr(self, 'target_specials', None) is None:
+                target_specials = get_target_specials(get_specials(self.target_vocab.stoi),
+                                                      self.target_vocab.stoi, 
+                                                      self.eos_id, self.sos_id, getattr(self, 
+                                                                                        'pad', None))
+            else:
+                target_specials = self.target_specials
+            '''
             try:
                 target_specials = self.target_specials
             except AttributeError:    
                 target_specials = {self.target_vocab.stoi[self.source_vocab.itos[i]] for i in self.specials} - {0}
+            '''
             #top_symbols = decoder_outputs[-1].topk(2)[1].data.cpu().view(-1,2).numpy()
             #current_counters = counters.data.cpu().view(-1).numpy()
             
@@ -204,7 +313,13 @@ class CustomDecoderRNN(DecoderRNN):
                 good = []
                 good_scores = []
 
-                legal = {self.eos_id} | {self.target_vocab.stoi[self.source_vocab.itos[i]] for i in encoder_input_data[idx]} | target_specials
+                #legal = {self.eos_id} | {self.target_vocab.stoi[self.source_vocab.itos[i]] for i in encoder_input_data[idx]} | self.target_specials
+                legal = target_specials | encoder_input_lookup[idx] #encoder_input_data[idx]
+
+                cce_keywords_idx = None
+                if cce_keywords is not None:
+                    cce_keywords_idx = set(cce_keywords[idx].data.cpu().numpy()) - target_specials - encoder_input_lookup[idx]
+
                 scores = top_scores[idx]
                 multiplier = 2
                 while True:
@@ -217,8 +332,10 @@ class CustomDecoderRNN(DecoderRNN):
                             if filter_illegal and symbol == self.eos_id:
                                 continue                            
                         
-                            source_symbol = self.source_vocab.stoi[self.target_vocab.itos[symbol]]
-                            if source_symbol not in encoder_input_lookup[idx] and source_symbol not in self.specials:
+                            #source_symbol = self.source_vocab.stoi[self.target_vocab.itos[symbol]]
+                            #if source_symbol not in encoder_input_lookup[idx] and symbol not in self.target_specials:#source_symbol not in self.specials:
+
+                            if symbol not in encoder_input_lookup[idx] and symbol not in target_specials and (cce_keywords_idx is None or symbol in cce_keywords_idx):
                                 count -= 1
                         #if the counter is at 0, legal symbols are the input and EOS and the specials (find highest scoring)
                             
@@ -262,8 +379,14 @@ class CustomDecoderRNN(DecoderRNN):
             scores = Variable(torch.FloatTensor(new_scores)).view(-1,1)
             if torch.cuda.is_available():
                 scores = scores.cuda()
-
+            
             decoder_input = torch.cat([symbols.unsqueeze(2), current_counters.unsqueeze(2)], dim=2)
+            if features is not None and len(features):
+                for feature in features:
+                    decoder_input = torch.cat([decoder_input,
+                                                feature.view(-1, 1).expand_as(decoder_input[:,:,0]).unsqueeze(2)], 
+                                           dim=2)
+
             #NOTE: if we have counters instead of current_counters, counters is never incremented and this is why we had that bug earlier
         else:
             symbols = decoder_outputs.topk(1)[1]
@@ -290,7 +413,7 @@ class CustomDecoderRNN(DecoderRNN):
     
     def forward(self, encoder_inputs, decoder_inputs=None, encoder_hidden=None, encoder_outputs=None,
                     function=F.log_softmax, teacher_forcing_ratio=0, counts=None, mask=None, copy_mask=None,
-                    filter_illegal=True, use_prefix=False):
+                    filter_illegal=True, use_prefix=False, features=None, cce_keywords=None):
         #print(encoder_inputs)
         
         ret_dict = dict()
@@ -300,7 +423,8 @@ class CustomDecoderRNN(DecoderRNN):
         decoder_inputs, batch_size, max_length, extras = self._validate_args(encoder_inputs, decoder_inputs,
                                                                              encoder_hidden, encoder_outputs,
                                                                              function, teacher_forcing_ratio,
-                                                                             counts, use_prefix=use_prefix)
+                                                                             counts, use_prefix=use_prefix, 
+                                                                             features=features, cce_keywords=cce_keywords)
         decoder_hidden = self._init_state(encoder_hidden)
 
         use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
@@ -317,7 +441,7 @@ class CustomDecoderRNN(DecoderRNN):
             decoder_input = decoder_inputs[:, :-1]
             decoder_output, decoder_hidden, attn = self.forward_step(decoder_input, decoder_hidden, encoder_outputs,
                                                                      function=function,
-                                                                     mask=mask, copy_mask=copy_mask)
+                                                                     mask=mask, copy_mask=copy_mask, cce_keywords=cce_keywords)
 
             for di in range(decoder_output.size(1)):
                 step_output = decoder_output[:, di, :]
@@ -332,7 +456,8 @@ class CustomDecoderRNN(DecoderRNN):
                     
                 sequence_symbols, _, extras = self.decode(di, decoder_outputs[-1], sequence_symbols, *extras,
                                                            use_teacher_forcing=use_teacher_forcing,
-                                                           filter_illegal=filter_illegal)
+                                                           filter_illegal=filter_illegal,
+                                                          features=features, cce_keywords=cce_keywords)
         else:
             decoder_input = decoder_inputs[:, 0].unsqueeze(1)
 
@@ -340,7 +465,7 @@ class CustomDecoderRNN(DecoderRNN):
                 decoder_output, decoder_hidden, step_attn = self.forward_step(decoder_input, decoder_hidden,
                                                                               encoder_outputs,
                                                                               function=function,
-                                                                              mask=mask, copy_mask=copy_mask)
+                                                                              mask=mask, copy_mask=copy_mask, cce_keywords=cce_keywords)
                 step_output = decoder_output.squeeze(1)
                 
                 decoder_outputs.append(step_output)
@@ -348,8 +473,9 @@ class CustomDecoderRNN(DecoderRNN):
                     ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
 
                 sequence_symbols, decoder_input, extras =self.decode(di, decoder_outputs[-1], sequence_symbols,
-                                                                  *extras, use_teacher_forcing=use_teacher_forcing,
-                                                                  filter_illegal=filter_illegal)
+                                                                     *extras, use_teacher_forcing=use_teacher_forcing,
+                                                                     filter_illegal=filter_illegal and (di > 0 or not use_prefix),
+                                                                              features=features, cce_keywords=cce_keywords)
                 if di == 0 and use_prefix:
                     decoder_input = decoder_inputs[:, 1].unsqueeze(1)
                                                                   
@@ -380,7 +506,7 @@ class CustomDecoderRNN(DecoderRNN):
 
     def _validate_args(self, encoder_inputs, decoder_inputs, encoder_hidden,
                        encoder_outputs, function, teacher_forcing_ratio,
-                       counts=None, use_prefix=False):
+                       counts=None, use_prefix=False, features=None, cce_keywords=None):
 
         if self.use_attention:
             if encoder_outputs is None:
@@ -399,9 +525,11 @@ class CustomDecoderRNN(DecoderRNN):
                     batch_size = encoder_hidden.size(1)
 
         encoder_input_data = encoder_inputs.data.cpu().numpy()
-        encoder_input_lookup = [set(x) for x in encoder_input_data]
+        #encoder_input_lookup = [set(x) for x in encoder_input_data]
+        encoder_input_lookup = [{self.target_vocab.stoi[self.source_vocab.itos[xx]] for xx in x} for x in encoder_input_data]
 
-        extras = [encoder_input_data, encoder_input_lookup]
+        #extras = [encoder_input_data, encoder_input_lookup]
+        extras = [encoder_input_lookup, encoder_input_data]
                                     
         # set default input and max decoding length
         if decoder_inputs is None:
@@ -421,7 +549,15 @@ class CustomDecoderRNN(DecoderRNN):
                 decoder_inputs = decoder_inputs.cuda()
                 
             decoder_inputs = torch.cat([decoder_inputs.unsqueeze(2),
-                                        counts.view(batch_size, 1).expand_as(decoder_inputs).unsqueeze(2)], dim=2)
+                                        counts.view(batch_size, 1).expand_as(decoder_inputs).unsqueeze(2)], 
+                                       dim=2)
+            
+            if features is not None:
+                for feature in features:
+                    decoder_inputs = torch.cat([decoder_inputs,
+                                                feature.view(batch_size, 1).expand_as(decoder_inputs[:,:,0]).unsqueeze(2)], 
+                                           dim=2)
+            
             max_length = self.max_length
         else:
             #generate counts from decoder/encoder input pairs
@@ -445,6 +581,7 @@ class CustomDecoderRNN(DecoderRNN):
                 
                 #for ptr-gen, also need to map encoder input positions to vocabulary items
                 #map index in target vocab with index into attention distribution over input along with count
+                '''
                 encoder_input_lookup = {}
                 oov_idx = len(self.target_vocab.stoi)
                 for position,symbol in enumerate(encoder_input_data[idx]):
@@ -460,30 +597,63 @@ class CustomDecoderRNN(DecoderRNN):
                 if len(encoder_input_lookup) > max_len_map:
                     max_len_map = len(encoder_input_lookup.values())
                 input_attention_map.append(encoder_input_lookup.values())
-                    
+                '''
+                if getattr(self, 'target_specials', None) is None:
+                    target_specials = get_target_specials(get_specials(self.target_vocab.stoi),
+                                                          self.target_vocab.stoi, self.eos_id, self.sos_id, 
+                                                          getattr(self, 'pad', None))
+                else:
+                    target_specials = self.target_specials
+
+                cce_keywords_idx = None
+                if cce_keywords is not None:
+                    cce_keywords_idx = set(cce_keywords[idx].data.cpu().numpy()) - target_specials - encoder_input_lookup[idx]
+
+
                 count = 0
                 source_symbols = []
                 for symbol in x:
-                    source_symbol = self.source_vocab.stoi[self.target_vocab.itos[symbol]]
-                    source_symbols.append(source_symbol)
-                    if source_symbol not in encoder_input_lookup and source_symbol not in self.specials:
+                    #source_symbol = self.source_vocab.stoi[self.target_vocab.itos[symbol]]
+                    #source_symbols.append((source_symbol, symbol))
+                    #if source_symbol not in encoder_input_lookup[idx] and symbol not in self.target_specials: #source_symbol not in self.specials:
+                    if symbol not in encoder_input_lookup[idx] and symbol not in target_specials and (cce_keywords_idx is None or symbol in cce_keywords_idx):
                         count += 1
                         
                 counts = []
                 #print(count)
-                for source_symbol in source_symbols:
-                    if source_symbol not in encoder_input_lookup and source_symbol not in self.specials:
+                #for source_symbol, symbol in source_symbols:
+                for symbol in x:
+                    '''
+                    print(self.source_vocab.itos[self.source_vocab.stoi[self.target_vocab.itos[symbol]]], 
+                          self.target_vocab.itos[symbol], symbol,
+                          symbol in encoder_input_lookup[idx], symbol in self.target_specials,
+                          count)
+                    '''
+                    #if source_symbol not in encoder_input_lookup[idx] and symbol not in self.target_specials: #source_symbol not in self.specials:
+                    if symbol not in encoder_input_lookup[idx] and symbol not in target_specials and (cce_keywords_idx is None or symbol in cce_keywords_idx): #source_symbol not in self.specials:
                         count -= 1
                     counts.append(count)
-                #print(counts)
-                
+
+                '''
+                print(encoder_input_lookup[idx])
+                print([self.target_vocab.itos[ii] for ii in encoder_input_lookup[idx]])
+                print([self.target_vocab.itos[ii] for ii in x])
+                print(counts)
+                '''
+
                 input_counts.append(counts)
             input_counts = Variable(torch.LongTensor(input_counts))
             if torch.cuda.is_available():
                 input_counts = input_counts.cuda()
-                    
+
+
             decoder_inputs = torch.cat([decoder_inputs.unsqueeze(2),
                                         input_counts.unsqueeze(2)], dim=2)
+            if features is not None:
+                for feature in features:
+                    decoder_inputs = torch.cat([decoder_inputs,
+                                                feature.view(batch_size, 1).expand_as(decoder_inputs[:,:,0]).unsqueeze(2)], 
+                                           dim=2)
 
             '''
             for i in range(len(input_attention_map)):
@@ -493,6 +663,9 @@ class CustomDecoderRNN(DecoderRNN):
         #need to determine if a symbol we generate is in the input
         extras = [np.array([max_length] * batch_size), #lengths
                   decoder_inputs[:,0,1].contiguous().view(-1, 1)] + extras
+
+        #print(decoder_inputs[:,0,1].data.cpu().numpy())
+        #print(collections.Counter(decoder_inputs[:,0,1].data.cpu().numpy()))
 
         return decoder_inputs, batch_size, max_length, extras
                 

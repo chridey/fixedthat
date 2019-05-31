@@ -72,11 +72,19 @@ class Evaluator(object):
             input_variables, input_lengths  = getattr(batch, seq2seq.src_field_name)
             target_variables = getattr(batch, seq2seq.tgt_field_name)
             copy_mask = getattr(batch, 'extra', None)
+            cce_keywords = getattr(batch, 'cce', None)
             
+            features = []
+            idx = 0
+            while getattr(batch, 'features{}'.format(idx), None) is not None:
+                features.append(getattr(batch, 'features{}'.format(idx)))
+                idx += 1
+
             decoder_outputs, decoder_hidden, other = model(input_variables, input_lengths.tolist(),
                                                            target_variables, mask=copy_mask,
                                                            filter_illegal=self.filter_illegal,
-                                                           use_prefix=self.use_prefix)
+                                                           use_prefix=self.use_prefix,
+                                                           features=features, cce_keywords=cce_keywords)
 
             # Evaluation
             seqlist = other['sequence']

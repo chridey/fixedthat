@@ -9,15 +9,17 @@ class BeamSearchDecoder(TopKDecoder):
     
     def forward(self, encoder_inputs, decoder_inputs=None, encoder_hidden=None, encoder_outputs=None,
                 function=F.log_softmax, teacher_forcing_ratio=0, retain_output_probs=True, counts=None,
-                mask=None, copy_mask=None, filter_illegal=True, use_prefix=False):
+                mask=None, copy_mask=None, filter_illegal=True, use_prefix=False, features=None, cce_keywords=None):
         """
         Forward rnn for MAX_LENGTH steps.  Look at :func:`seq2seq.models.DecoderRNN.DecoderRNN.forward_rnn` for details.
         """
 
         decoder_inputs, batch_size, max_length, extras = self.rnn._validate_args(encoder_inputs, decoder_inputs,
-                                                                             encoder_hidden, encoder_outputs,
-                                                                             function, teacher_forcing_ratio,
-                                                                             counts)
+                                                                                 encoder_hidden, encoder_outputs,
+                                                                                 function, teacher_forcing_ratio,
+                                                                                 counts, features=features, cce_keywords=cce_keywords)
+
+        #print(max_length)
 
         self.pos_index = Variable(torch.LongTensor(range(batch_size)) * self.k).view(-1, 1)
         self.pos_index = self.pos_index.expand(batch_size, self.k).contiguous().view(batch_size*self.k,1)
@@ -90,11 +92,18 @@ class BeamSearchDecoder(TopKDecoder):
         counters = _inflate(counters[:, 0].unsqueeze(1), self.k, 1).view(batch_size*self.k,1,-1)
         extras = [None, counters] + extras[2:]
 
+        if features is not None:
+            for idx in range(len(features)):
+                features[idx] = _inflate(features[idx][:, 0].unsqueeze(1), self.k, 1).view(batch_size*self.k,1,-1)
+
         if mask is not None:
             mask = _inflate(mask.view(batch_size, 1, -1), self.k, 1).view(batch_size*self.k, -1)
         if copy_mask is not None:
             copy_mask = _inflate(copy_mask.view(batch_size, 1, -1), self.k, 1).view(batch_size*self.k, -1)
                 
+        if cce_keywords is not None:
+            cce_keywords = _inflate(cce_keywords.view(batch_size, 1, -1), self.k, 1).view(batch_size*self.k, -1)
+
         # Store decisions for backtracking
         stored_outputs = list()
         stored_scores = list()
@@ -110,7 +119,7 @@ class BeamSearchDecoder(TopKDecoder):
             # Run the RNN one step forward
             log_softmax_output, hidden, _ = self.rnn.forward_step(input_var, hidden,
                                                                   inflated_encoder_outputs, function=function,
-                                                                  copy_mask=copy_mask, mask=mask)
+                                                                  copy_mask=copy_mask, mask=mask, cce_keywords=cce_keywords)
 
             # If doing local backprop (e.g. supervised training), retain the output layer
             if retain_output_probs:
@@ -123,7 +132,8 @@ class BeamSearchDecoder(TopKDecoder):
             #need to change the decode function to handle legal inputs instead of the code below
             sequence_symbols, input_var, extras = self.rnn.decode(step, sequence_scores, [],
                                                          *extras, use_teacher_forcing=False, k=self.k,
-                                                         filter_illegal=filter_illegal, verbose=False)
+                                                                  filter_illegal=filter_illegal, verbose=False,
+                                                                  features=features, cce_keywords=cce_keywords)
             #print(input_var)
             scores, predecessors = extras[-2:]
             #print(scores)
