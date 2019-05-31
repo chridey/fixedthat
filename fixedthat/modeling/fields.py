@@ -67,14 +67,12 @@ class CustomTargetField(torchtext.data.Field):
         self.eos_id = self.vocab.stoi[self.SYM_EOS]
 
     def process(self, batch, device, train):
-        #print(batch[0], type(batch[0]))
         if self.get_size:
             size = torch.autograd.Variable(torch.LongTensor([int(x[0]) for x in batch])).view(-1, 1).expand(-1, 2)
             if torch.cuda.is_available():
                 size = size.cuda()
             return size
         
-        #print(batch[0])
         if not self.counter:
             return super(CustomTargetField, self).process(batch, device, train)
 
@@ -82,20 +80,15 @@ class CustomTargetField(torchtext.data.Field):
         batch_tokens = []
         batch_counts = []
         for x in batch:
-            #print(x)
             tokens, counts = zip(*x)
-            #print(tokens)
-            #print(counts)
             new_counts = []
             decrement = 0
             #need to handle UNK tokens by decrementing counts
             for i in range(1,len(tokens))[::-1]:
-                #print(tokens[i], self.vocab.stoi[tokens[i]])
                 new_counts.insert(0, counts[i] - decrement)
                 if counts[i] != counts[i-1] and self.vocab.stoi[tokens[i]] == 0:
                     decrement += 1
             new_counts.insert(0, counts[0] - decrement)
-            #print(new_counts)
             
             batch_tokens.append(tokens)
             batch_counts.append(counts)
@@ -103,7 +96,6 @@ class CustomTargetField(torchtext.data.Field):
         padded = self.pad(batch_tokens)
         tensor = self.numericalize(padded, device=device, train=train)
 
-        #TODO: add init_token and eos_token
         save_pad = self.pad_token
         save_vocab = self.use_vocab
         save_lengths = self.include_lengths
@@ -121,17 +113,6 @@ class CustomTargetField(torchtext.data.Field):
             tensor, lengths = tensor
 
         tensor = torch.cat([tensor.unsqueeze(2), count_tensor.unsqueeze(2)], dim=2)
-        '''
-        print(batch_tokens[0])
-        print(batch_counts[0])
-        print(tensor[0])
-        print(batch_tokens[1])
-        print(batch_counts[1])        
-        print(tensor[1])
-        print(batch_tokens[2])
-        print(batch_counts[2])        
-        print(tensor[2])                
-        '''
         
         if self.include_lengths:
             return tensor, lengths

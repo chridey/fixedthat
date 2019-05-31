@@ -1,9 +1,19 @@
+'''
+adapted from https://github.com/IBM/pytorch-seq2seq to allow for the additional features described in Section 4 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 from torch import nn
 import torch.nn.functional as F
 
 from seq2seq.models import Seq2seq
 
 class CustomSeq2seq(Seq2seq):
+    '''
+    encoder - the model for representing the source
+    decoder - the model for predicting the target
+    copy_predictor - the model to predict whether to copy from the input (described in Section 4.3)
+    crf - use a CRF instead of independent binary copy predictions
+    '''
     def __init__(self, encoder, decoder, decode_function=F.log_softmax, predict_size=False, 
                  copy_predictor=None, crf=False):
 

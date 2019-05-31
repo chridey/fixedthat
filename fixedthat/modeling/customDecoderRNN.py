@@ -1,3 +1,7 @@
+'''
+adapted from https://github.com/IBM/pytorch-seq2seq to allow for the additional features described in Section 4 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 import collections
 
 import random
@@ -22,6 +26,9 @@ from seq2seq.models import DecoderRNN
 from fixedthat.modeling.customAttention import Attention
 
 def get_specials(vocab):
+    '''
+    all the special tokens that are allowed to be copied in constrained decoding mode
+    '''
     specials = ut.stopwords | \
                        set('~!@#$%^&*()_+`-={}|[]\\:";\'<>?,./') | \
                        set(j for j in vocab if all(map(lambda x: not x.isalnum(), j))) | \
@@ -29,11 +36,14 @@ def get_specials(vocab):
     return specials
 
 def get_target_specials(specials, vocab, eos_id, sos_id, pad=None):
+    '''
+    the indices of the tokens that are allowed to be generated
+    '''
+    
     target_specials = {vocab[i] for i in specials} | {0, eos_id, sos_id}
     if pad is not None:
         target_specials.add(pad)
     return target_specials
-
 
 class CustomDecoderRNN(DecoderRNN):
     r"""

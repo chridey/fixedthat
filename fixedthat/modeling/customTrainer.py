@@ -1,3 +1,7 @@
+'''
+adapted from https://github.com/IBM/pytorch-seq2seq to allow for the additional features described in Section 4 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 import os
 import logging
 
@@ -10,7 +14,6 @@ import seq2seq
 from seq2seq.loss import NLLLoss
 from seq2seq.trainer import SupervisedTrainer
 from seq2seq.evaluator import Evaluator
-#from seq2seq.util.checkpoint import Checkpoint
 
 from fixedthat.modeling.customCheckpoint import CustomCheckpoint as Checkpoint
 
@@ -23,6 +26,8 @@ class CustomTrainer(SupervisedTrainer):
         loss (seq2seq.loss.loss.Loss, optional): loss for training, (default: seq2seq.loss.NLLLoss)
         batch_size (int, optional): batch size for experiment, (default: 64)
         checkpoint_every (int, optional): number of epochs to checkpoint after, (default: 100)
+        filter_illegal: whether to do constrained decoding during training
+        extra_vocabs: list of extra vocabularies (e.g. for topics/subreddits)
     """
     def __init__(self, expt_dir='experiment', loss=NLLLoss(), batch_size=64,
                  random_seed=None,
@@ -70,7 +75,7 @@ class CustomTrainer(SupervisedTrainer):
         if 'copy_mask' in other and other['has_grad']:
             for step, step_output in enumerate(other['copy_mask']):
                 batch_size = target_variable.size(0)
-                #print(target_variable.shape, copy_mask.shape, step_output.shape, other['copy_mask'].shape)
+
                 loss.eval_subloss_batch(1, step_output.contiguous().view(batch_size, -1),
                                         copy_mask[:, step])
                 

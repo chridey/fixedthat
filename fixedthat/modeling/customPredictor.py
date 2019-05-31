@@ -1,3 +1,7 @@
+'''
+adapted from https://github.com/IBM/pytorch-seq2seq to allow for the additional features described in Section 4 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 from __future__ import print_function
 
 import numpy as np
@@ -42,8 +46,6 @@ class CustomPredictor(Predictor):
             sort=True, sort_key=lambda x: len(x.src),
             device=device, train=False)
 
-        #pad = self.tgt_vocab.stoi[data.fields[seq2seq.tgt_field_name].pad_token]
-        
         counts = Variable(torch.LongTensor([1] * batch_size)).view(batch_size, 1)
         if torch.cuda.is_available():
             counts = counts.cuda()
@@ -73,18 +75,14 @@ class CustomPredictor(Predictor):
                 best_sequence = []
                 batch_size = input_variables.size(0)
                 counts = Variable(torch.LongTensor(list(range(1, max_range+1)) * batch_size)).view(batch_size * max_range, 1)
-                #print(type(input_variables), input_variables.shape)
+
                 input_variables = input_variables.view(batch_size, 1, -1).expand(batch_size, max_range, -1).contiguous().view(batch_size * max_range, -1)
-                #print(type(input_lengths), input_lengths.shape)
+
                 input_lengths = input_lengths.view(batch_size, 1).expand(batch_size, max_range).contiguous().view(batch_size * max_range)
 
-                #print(len(features))
                 if len(features):
                     for idx in range(len(features)):
                         features[idx] = features[idx].view(batch_size, 1).expand(batch_size, max_range).contiguous().view(batch_size * max_range, 1)
-
-                #TODO: expand copy_mask                
-                #counts = Variable(torch.LongTensor([counter] * batch_size)).view(batch_size, 1)
 
                 if cce_keywords is not None:
                     cce_keywords = cce_keywords.view(batch_size, 1, -1).expand(batch_size, max_range, -1).contiguous().view(batch_size * max_range, -1)
@@ -100,9 +98,7 @@ class CustomPredictor(Predictor):
                                              features=features,
                                          cce_keywords=cce_keywords)
                 score = other['score']
-                #print(score.shape)
                 seqlist = other['sequence']
-                #print(seqlist[0].shape)
             else:
                 max_range = 1
                 _, _, other = self.model(input_variables, input_lengths.tolist(),
@@ -114,7 +110,6 @@ class CustomPredictor(Predictor):
                                          cce_keywords=cce_keywords)
                     
                 seqlist = other['sequence']
-            #print('seq', seqlist)
 
             batch_output = [[batch_idxs[i//max_range]] for i in range(input_variables.size(0))]
             for step, token_ids in enumerate(seqlist):
@@ -125,20 +120,12 @@ class CustomPredictor(Predictor):
                         else:
                             batch_output[index].append(int(token_id.data))
 
-            #print(batch_size, max_range, other['score'].shape)
             _, argmax_scores = other['score'][:,0].contiguous().view(batch_size, max_range).topk(1, dim=1)
             argmax_scores = argmax_scores.cpu().numpy().reshape(-1)
-            #print(argmax_scores)
+
             for idx,arg in enumerate(argmax_scores):
                 seq = batch_output[idx * max_range + arg]
                 print(' '.join(map(unicode, seq)).encode('utf-8'), file=file_handle)
-
-            '''
-            for idx,seq in enumerate(batch_output):
-                print(other['score'][idx][0])
-                print(' '.join(map(unicode, seq)).encode('utf-8'), file=file_handle)
-            '''
-            #output.extend(batch_output)
 
         return output
                     
@@ -165,10 +152,6 @@ class CustomPredictor(Predictor):
 
             #if we are in beam search mode
             if verbose and 'score' in other:
-                #print(other['score'].shape)
-                #print(other['score'])
-                #print(other['topk_sequence'])
-                #print(other['topk_length'])
 
                 for i in range(other['score'].size(1)):
                     length = other['topk_length'][0][i]
@@ -189,7 +172,5 @@ class CustomPredictor(Predictor):
             if count_normalize:
                 best_scores[-1] /= counter
 
-        print(best, best_scores)
         return best[np.argmax(best_scores)]
             
-        #return tgt_seq

@@ -1,3 +1,7 @@
+'''
+adapted from https://github.com/IBM/pytorch-seq2seq to allow for the additional features described in Section 4 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 from __future__ import print_function, division
 
 import os
@@ -16,6 +20,8 @@ class Evaluator(object):
         batch_size (int, optional): batch size for evaluator (default: 64)
 
         prediction_dir - whether to save individual predictions
+        pad - the pad character
+        filter_illegal- whether to do constrained decoding 
     """
 
     def __init__(self, loss=NLLLoss(), batch_size=64, prediction_dir=None, pad=None,
@@ -33,9 +39,7 @@ class Evaluator(object):
         self.use_prefix = use_prefix
 
     def save_predictions(self, predictions):
-        #print(len(predictions), [i.shape for i in predictions])
         predictions = np.concatenate(predictions, axis=0)
-        #print(predictions.shape)
         np.save(os.path.join(self.prediction_dir, 'predictions' + str(self.epoch)), predictions)
             
         self.epoch += 1

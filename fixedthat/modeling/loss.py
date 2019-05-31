@@ -4,22 +4,6 @@ import torch.nn as nn
 
 from seq2seq.loss.loss import Loss
 
-'''
-class _BCELoss(nn.Module):
-
-    def __init__(self, weight=None, size_average=True, reduce=True):
-        super(_BCELoss, self).__init__(weight, size_average, reduce)
-        self.size_average = size_average
-        self.reduce = reduce
-        
-        
-    def forward(self, input, target):
-        _assert_no_grad(target)
-        return F.binary_cross_entropy(input, target, weight=self.weight,
-                                      size_average=self.size_average,
-                                      reduce=self.reduce)
-'''
-
 class BCELoss(Loss):
     """ Batch averaged poisson negative log-likelihood loss for predicting count data
         Args:

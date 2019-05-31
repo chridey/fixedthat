@@ -1,3 +1,7 @@
+'''
+adapted from https://github.com/IBM/pytorch-seq2seq to allow saving and loading of additional vocabularies (e.g. for topics/subreddits)
+'''
+
 from __future__ import print_function
 import os
 import time
@@ -21,12 +25,14 @@ class CustomCheckpoint(Checkpoint):
         step (int): number of examples seen within the current epoch
         input_vocab (Vocabulary): vocabulary for the input language
         output_vocab (Vocabulary): vocabulary for the output language
+        extra_vocabs: list of Vocabularies
     Attributes:
         CHECKPOINT_DIR_NAME (str): name of the checkpoint directory
         TRAINER_STATE_NAME (str): name of the file storing trainer states
         MODEL_NAME (str): name of the file storing model
         INPUT_VOCAB_FILE (str): name of the input vocab file
         OUTPUT_VOCAB_FILE (str): name of the output vocab file
+        EXTRA_VOCAB_FILE_PREFIX (str): beginning of extra vocab file
     """
 
     CHECKPOINT_DIR_NAME = 'checkpoints'

@@ -1,3 +1,7 @@
+'''
+the model for predicting which tokens to copy to the output, as described in Section 4.3 of "Fixed That for You: Generating Contrastive Claims with Semantic Edits"
+'''
+
 import random
 
 import numpy as np
@@ -17,10 +21,7 @@ from seq2seq.models import DecoderRNN
 
 class CopyPredictor(nn.Module):
     r"""
-    Provides functionality for size prediction
-    Args:
-    Inputs: 
-    Outputs: 
+    Provides functionality for binary copy prediction
     """
 
     def __init__(self, input_size, hidden_size, bidirectional=False, use_attention=False, beta=0, gamma=(1-10e-5), crf=False):
@@ -30,13 +31,11 @@ class CopyPredictor(nn.Module):
         self.hidden_size = hidden_size
         self.bidirectional_encoder = bidirectional
         self.beta = beta
-        #TODO: anneal this
         self.old_beta = None
         
         self.batches_seen = 0
         self.gamma = gamma
         
-        #TODO: self-attention
         self.use_attention = False #use_attention
         if self.use_attention:
             self.attention = Attention(self.input_size)
@@ -76,7 +75,6 @@ class CopyPredictor(nn.Module):
     def forward(self, encoder_outputs, mask=None, input_lengths=None):
         
         if mask is not None and self.beta==1:
-            #return mask, None, None
             return mask.transpose(0,1).contiguous().float(), None, None
         
         batch_size, input_size = self._validate_args(encoder_outputs)
@@ -84,28 +82,20 @@ class CopyPredictor(nn.Module):
         attn = None        
         if self.use_attention:
             query = self.query.view(1,1,-1).expand(batch_size, 1, -1)
-            #print(query.shape)
-            #print(encoder_outputs.shape)
             
             #fixed query attention
             output, attn = self.attention(query, encoder_outputs)
             output = output.view(batch_size, -1)
-        #else:
-        #    output = torch.mean(encoder_outputs, dim=1)
         else:
             output = encoder_outputs
             
         prediction = self._get_logits(output, batch_size, input_size)
 
-        #print(prediction.transpose(0,1).shape)
-        #print(list(enumerate(prediction.transpose(0,1))))
-
         #for interpolating between gold and predicted during training
-        #print(mask.shape, prediction.shape)
         scores = self.beta*mask.transpose(0,1).float() + (1-self.beta)*prediction
         predictions = (scores+0.5).long()
         
-        return scores, None, {'attention_score': attn, 'sequence': predictions} #[torch.exp(prediction).long()]}
+        return scores, None, {'attention_score': attn, 'sequence': predictions}
 
     def score(self, logits, y, lens):
         y_exp = y.unsqueeze(-1)

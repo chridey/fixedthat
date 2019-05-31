@@ -6,6 +6,9 @@ import torch.nn.functional as F
 class Attention(nn.Module):
     r"""
     Applies an attention mechanism on the output features from the decoder.
+
+    adapted from https://github.com/IBM/pytorch-seq2seq
+    
     .. math::
             \begin{array}{ll}
             x = context*output \\
@@ -68,14 +71,6 @@ class Attention(nn.Module):
         hidden_size = output.size(2)
         input_size = context.size(1)
         output_size = output.size(1)
-
-        '''
-        if self.copy_predictor:
-            assert(mask is not None)
-            mask_e = mask.unsqueeze(2).expand_as(context)
-            copy_context = mask_e.float() * context * mask_e.ne(2).float()
-            context = (1-mask_e).float() * context * mask_e.ne(2).float()
-        '''
         
         # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)        
         if getattr(self, 'attn_type', 'dot') == 'dot':
@@ -99,13 +94,6 @@ class Attention(nn.Module):
                 output_e = output.unsqueeze(2).expand(batch_size, output_size, input_size, hidden_size)
                 context_e = context.unsqueeze(1).expand(batch_size, output_size, input_size, hidden_size)
                 attn2 = self.v_copy(self.w_hs_copy(torch.cat([output_e, context_e], dim=3))).squeeze(3)
-
-            # (batch, out_len, dim) * (batch, in_len, dim) -> (batch, out_len, in_len)
-            #TODO: separate attention
-            #copy_attn = torch.bmm(output, copy_context.transpose(1, 2))
-            #if self.mask is not None:
-            #    copy_attn.data.masked_fill_(self.mask, -float('inf'))
-            #copy_attn = F.softmax(copy_attn.view(-1, input_size)).view(batch_size, -1, input_size)
 
             # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
             mask_e = copy_mask.view(batch_size, -1, input_size).expand_as(attn)
