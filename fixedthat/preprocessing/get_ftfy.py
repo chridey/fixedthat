@@ -60,20 +60,37 @@ while date <= end_date:
     count = 0
     with gzip.open('{}-{}.{}.gz'.format(date.year, date.month, '.'.join(keywords)), 'w') as f:
         for j in get_data(date):
+            body = j['body'].lower()
+            for k in keywords:
+                index = body.find(k)
+                if index != -1 and (index+len(k) >= len(body) or not body[index+len(k)].isalnum()) and (index == 0 or not body[index-1].isalnum()):
+                    count += 1
+                    parents.add(j['parent_id'])
+                    f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
+                    break
+
+            '''
             if any(k in j['body'].lower() for k in keywords): #'ftfy' in j['body'].lower():
                 count += 1
                 parents.add(j['parent_id'])
                 f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
+            '''
     print(count)
     
     with gzip.open('{}-{}.{}.parents.gz'.format(date.year, date.month, '.'.join(keywords)), 'w') as f:
         for j in get_data(date):
-            if 'name' in j and j['name'] in parents or ('id' in j and (j['id'] in parents or 't3_'+j['id'] in parents or 't1_'+j['id'] in parents)):
-                f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
+            try:
+                if 'name' in j and j['name'] in parents or ('id' in j and (j['id'] in parents or 't3_'+j['id'] in parents or 't1_'+j['id'] in parents)):
+                    f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
+            except Exception:
+                continue
         for j in get_data(date, True):
-            if 'name' in j and j['name']  in parents or ('id' in j and (j['id'] in parents or 't3_'+j['id'] in parents or 't1_'+j['id'] in parents)):
-                f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
-
+            try:
+                if 'name' in j and j['name']  in parents or ('id' in j and (j['id'] in parents or 't3_'+j['id'] in parents or 't1_'+j['id'] in parents)):
+                    f.write(bytes(json.dumps(j) + "\n", 'utf-8')) #print(json.dumps(j), file=f)
+            except Exception:
+                continue
+            
     year = date.year
     month = date.month + 1
     if month > 12:
