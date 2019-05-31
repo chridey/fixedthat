@@ -17,6 +17,8 @@ class Attention(nn.Module):
             \end{array}
     Args:
         dim(int): The number of expected features in the output
+        copy predictor - whether to use a supervised attention
+        attn_type - dot product or bahdanau attention
     Inputs: output, context
         - **output** (batch, output_len, dimensions): tensor containing the output features from the decoder.
         - **context** (batch, input_len, dimensions): tensor containing features of the encoded input sequence.
