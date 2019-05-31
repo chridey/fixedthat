@@ -163,7 +163,7 @@ if opt.use_model:
     def iterator():
         for idx, row in df.iterrows():
             if predictions[idx]:
-                yield row, row['ftfy'], row['parent'], row['copy']
+                yield row.to_dict(), row['ftfy'], row['parent'], row['copy']
 
     iterator = iterator()
 #TODO: make sure sie of predictions is same
@@ -172,13 +172,11 @@ parents = []
 parent_copies = []
 ftfys = []
 full_json = []
+totals = collections.Counter()
 
 for idx, (j, ftfy, parent, copy) in enumerate(iterator):
     if idx % 10000 == 0:
         print(idx)
-    if opt.add_subreddit:
-        ftfy.insert(0, '__2__' + j['subreddit'] + '__')
-        #parent.insert(0, '__2__' + j['subreddit'] + '__')
 
     if opt.add_copy:
         parent_copies.append(copy)
@@ -191,8 +189,11 @@ for idx, (j, ftfy, parent, copy) in enumerate(iterator):
         path = j['full_path']
         best_range = ut.get_adjusted_range(j)
         try:
-            transitions = tut.path2transitions(path, parent, best_range, ftfy)
-            reconstructed_ftfy = tut.transitions2ftfy(transitions, parent)
+            transitions = tut.path2edits(path, parent, best_range, ftfy)
+            reconstructed_ftfy = tut.edits2ftfy(transitions)
+                        
+            #transitions = tut.path2transitions(path, parent, best_range, ftfy)
+            #reconstructed_ftfy = tut.transitions2ftfy(transitions, parent)
         except IndexError:
             transitions = []
             reconstructed_ftfy = []
@@ -204,15 +205,26 @@ for idx, (j, ftfy, parent, copy) in enumerate(iterator):
         else:
             totals['bad_transitions'] += 1
             #if we cant match this, shift everything from the source and generate everything from the target
-            ftfy = ['SHIFT'] * len(parent) + map(lambda x:x.lower(), ftfy) + ['REDUCE']
+            #ftfy = ['SHIFT'] * len(parent) + map(lambda x:x.lower(), ftfy) + ['REDUCE']
+            ftfy = parent + ['DELETE-{}'.format(len(parent))] + map(lambda x:x.lower(), ftfy)            
+            print(parent)            
             print(ftfy)
+            print(reconstructed_ftfy)
+            print(transitions)
             #continue
+            
+    if opt.add_subreddit:
+        ftfy.insert(0, '__2__' + j['subreddit'] + '__')
+        #parent.insert(0, '__2__' + j['subreddit'] + '__')
 
     parents.append(parent)
     ftfys.append(ftfy)
     if opt.include_json:
         full_json.append(j)
-            
+
+print(totals)
+print(len(parents))        
+        
 if opt.random:
     choices = set(np.random.choice(len(parents), opt.random, False))
 else:
