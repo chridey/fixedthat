@@ -1,3 +1,111 @@
+def path2edits(path, parent, parent_range, ftfy, verbose=False):
+    beginning = parent[:parent_range[0]]    
+    leftovers = parent[parent_range[1]:]
+    parent = ['BOS'] + parent[parent_range[0]:parent_range[1]]
+    ftfy = ['BOS'] + ftfy
+    
+    #shift until we find an aligned word, then generate/delete from the stack, then pop all, then shift, then copy
+    transitions = []
+    stack = []
+    buffer = []
+
+    if path is None or path[-1] is None:
+        return []
+    
+    path[-1][0] = len(parent)-1
+    path[-1][1] = len(ftfy)-1
+    
+    for idx,node in enumerate(path[1:]):
+        if verbose:
+            print(node, parent[node[0]], ftfy[node[1]])
+        if parent[node[0]].lower() == ftfy[node[1]].lower():
+            if len(stack) and stack[-1] == node[0]:
+                stack.pop()
+                #transitions.pop()
+
+            if len(buffer) and buffer[-1] == node[1]:
+                buffer.pop()
+
+            if len(stack):
+                #transitions.append('REDUCE')
+                transitions.extend([parent[n].lower() for n in stack])
+                transitions.append('DELETE-{}'.format(len(stack)))
+                stack = []
+                
+            while len(buffer):
+                transitions.append(ftfy[buffer.pop(0)].lower())
+                                
+            #transitions.append('SHIFT')
+            transitions.append(parent[node[0]].lower())
+        else:
+            curr_ftfy = path[idx+1][1]
+            #if curr_ftfy == -1:
+            #    curr_ftfy = len(ftfy) - 1
+            curr_parent = path[idx+1][0]
+            #if curr_parent == -1:
+            #    curr_parent = len(parent) - 1
+
+            if verbose:
+                print(curr_parent, curr_ftfy)
+            
+            if path[idx][1] != curr_ftfy:
+                buffer.append(node[1])
+            if path[idx][0] != curr_parent: # and path[idx+2][0] != curr_parent:
+                #transitions.append('SHIFT')                
+                stack.append(node[0])
+
+    #if path[1][0] == -1:
+    #    parent_start = parent_range[0] + len(parent) - 1
+    #else:
+    parent_start = parent_range[0] + path[1][0]
+
+    if len(stack):
+        transitions += map(lambda x:parent[x].lower(), stack) + ['DELETE-{}'.format(len(stack))] 
+    
+    if path[1][1] not in (1,-1):
+        transitions = map(lambda x:x.lower(), ftfy[1:path[1][1]]) + transitions
+    
+    if parent_start not in (1,-1):
+        #transitions = ['SHIFT'] * (parent_start-1) + ['REDUCE'] + transitions
+        transitions = map(lambda x: x.lower(), beginning) + ['DELETE-{}'.format(parent_start-1)] + transitions
+            
+    #if parent_range[1] > parent_range[0] + len(parent):
+    #    transitions += ['SHIFT'] * (parent_range[1] - parent_range[0] + len(parent)) + ['REDUCE']
+    #if there is anything left at the end, add it
+    if len(buffer):
+        transitions += map(lambda x: ftfy[x].lower(), buffer)                
+
+    if len(leftovers):
+        transitions += map(lambda x: x.lower(), leftovers) + ['DELETE-{}'.format(len(leftovers))]
+
+
+    '''
+    final_transitions = []
+    count = 0
+    for transition in transitions:
+        if transition == 'SHIFT':
+            count += 1
+        else:
+            if count:
+                final_transitions.append('DELETE-{}'.format(count))
+            final_transitions.append(transition)
+            count = 0
+    if count:
+        final_transitions.append('DELETE-{}'.format(count))
+    '''
+        
+    return transitions
+
+def edits2ftfy(edits):
+    ftfy = []
+    for edit in edits:
+        if edit.startswith('DELETE'):
+            num_delete = int(edit.split('-')[1])
+            ftfy = ftfy[:-num_delete]
+        else:
+            ftfy.append(edit)
+    return ftfy
+
 def path2copy(path, parent, parent_range, ftfy):
     #print(parent, parent_range, ftfy)
     copy = [0] * len(parent)
