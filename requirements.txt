@@ -16,7 +16,7 @@ futures==3.2.0
 html5lib==0.9999999
 idna==2.6
 ipdb==0.10.3
-ipython==5.5.0
+ipython==7.16.3
 ipython-genutils==0.2.0
 Keras==1.2.2
 Markdown==2.6.9
